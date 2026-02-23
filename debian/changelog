@@ -1,0 +1,9 @@
+localdiscord (1.0.0) stable; urgency=low
+
+  * Initial release.
+  * P2P LAN chat with X25519 ECDH + AES-256-GCM end-to-end encryption.
+  * Automatic peer discovery via UDP broadcast and mDNS (zeroconf).
+  * Discord-inspired dark-theme PyQt6 user interface.
+  * Text channels and private messaging support.
+
+ -- Your Name <you@example.com>  Mon, 01 Jan 2024 00:00:00 +0000

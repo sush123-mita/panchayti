@@ -1,0 +1,410 @@
+"""
+app.py — Main application window.
+
+Layout (mimicking Discord)
+--------------------------
+┌──────────────────────────────────────────────────────────┐
+│  ┌──────────────────┐ ┌─────────────────────────────────┐│
+│  │  Server name hdr │ │   # channel-name   header bar   ││
+│  │──────────────────│ │─────────────────────────────────││
+│  │ TEXT CHANNELS    │ │                                  ││
+│  │  # general  ◄   │ │   chat messages (scrollable)    ││
+│  │  # random       │ │                                  ││
+│  │  # announcements│ │─────────────────────────────────││
+│  │──────────────────│ │  [  Message #general …    ] [→] ││
+│  │ ONLINE — 2       │ └─────────────────────────────────┘│
+│  │  🟢 Alice        │                                     │
+│  │  🟢 Bob          │                                     │
+│  │──────────────────│                                     │
+│  │  🟢 You (bottom) │                                     │
+│  └──────────────────┘                                     │
+└──────────────────────────────────────────────────────────┘
+
+Thread safety
+-------------
+All network callbacks arrive on worker threads.  They post data to the
+Qt main thread via Qt signals (NetworkBridge).  Never touch QWidget
+objects directly from non-main threads.
+"""
+
+import html
+from typing import Optional
+
+from PyQt6.QtCore import Qt, QObject, pyqtSignal, pyqtSlot, QSize
+from PyQt6.QtGui import QFont, QTextCursor, QColor, QPalette, QIcon
+from PyQt6.QtWidgets import (
+    QMainWindow, QWidget, QHBoxLayout, QVBoxLayout,
+    QLabel, QListWidget, QListWidgetItem, QTextEdit,
+    QLineEdit, QPushButton, QFrame, QSizePolicy,
+    QInputDialog, QMessageBox, QApplication,
+)
+
+from src.ui.styles import DARK_THEME
+
+
+# ------------------------------------------------------------------ #
+#  Signal bridge — safely cross the thread boundary                    #
+# ------------------------------------------------------------------ #
+
+class _Bridge(QObject):
+    """
+    Worker threads call these signals; Qt delivers them on the main
+    thread where all UI updates happen.
+    """
+    peer_connected    = pyqtSignal(object)   # Peer
+    peer_disconnected = pyqtSignal(str)      # peer_id
+    message_received  = pyqtSignal(object)   # Message
+
+
+# ------------------------------------------------------------------ #
+#  Helpers                                                             #
+# ------------------------------------------------------------------ #
+
+def _fmt_time(iso: str) -> str:
+    """Extract HH:MM from an ISO timestamp string."""
+    try:
+        return iso[11:16]
+    except Exception:
+        return ""
+
+
+def _escape(text: str) -> str:
+    """HTML-escape user content before inserting into the chat display."""
+    return html.escape(text)
+
+
+# ------------------------------------------------------------------ #
+#  MainWindow                                                          #
+# ------------------------------------------------------------------ #
+
+class MainWindow(QMainWindow):
+    """
+    Top-level window.  Wires UI ↔ business-logic objects together.
+
+    Parameters
+    ----------
+    network        : NetworkManager
+    discovery      : DiscoveryManager
+    peer_registry  : PeerRegistry
+    message_broker : MessageBroker
+    config         : Config
+    """
+
+    def __init__(self, network, discovery, peer_registry, message_broker, config):
+        super().__init__()
+        self._net     = network
+        self._disc    = discovery
+        self._peers   = peer_registry
+        self._broker  = message_broker
+        self._cfg     = config
+        self._channel = config.channels[0]   # currently viewed channel
+
+        # --- Thread-safe Qt signal bridge ---
+        self._bridge = _Bridge()
+        self._bridge.peer_connected.connect(self._on_peer_joined)
+        self._bridge.peer_disconnected.connect(self._on_peer_left)
+        self._bridge.message_received.connect(self._on_message)
+
+        # Wire network callbacks → bridge signals
+        network.on_peer_connected    = self._bridge.peer_connected.emit
+        network.on_peer_disconnected = self._bridge.peer_disconnected.emit
+        network.on_message_received  = self._bridge.message_received.emit
+
+        # Also notify UI when the broker emits (for messages sent by us)
+        message_broker.on_message(self._bridge.message_received.emit)
+
+        self._build_ui()
+
+    # ---------------------------------------------------------------- #
+    #  UI construction                                                   #
+    # ---------------------------------------------------------------- #
+
+    def _build_ui(self):
+        self.setWindowTitle(self._cfg.app_name)
+        self.setMinimumSize(900, 600)
+        self.resize(
+            self._cfg.get("ui.window_width",  1100),
+            self._cfg.get("ui.window_height", 700),
+        )
+        self.setStyleSheet(DARK_THEME)
+
+        root = QWidget()
+        self.setCentralWidget(root)
+        layout = QHBoxLayout(root)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(0)
+
+        layout.addWidget(self._make_sidebar())
+        layout.addWidget(self._make_chat_panel(), stretch=1)
+
+        # Kick off with a welcome note
+        self._append_system(
+            f"Welcome, <b>{_escape(self._cfg.username)}</b>! "
+            "Searching for peers on the local network…"
+        )
+
+    # ---- Sidebar ----------------------------------------------------- #
+
+    def _make_sidebar(self) -> QWidget:
+        sidebar = QWidget()
+        sidebar.setObjectName("sidebar")
+        sidebar.setFixedWidth(240)
+
+        vbox = QVBoxLayout(sidebar)
+        vbox.setContentsMargins(0, 0, 0, 0)
+        vbox.setSpacing(0)
+
+        # Server name header
+        header = QLabel(f" {self._cfg.app_name}")
+        header.setObjectName("server_name")
+        header.setFixedHeight(48)
+        header.setAlignment(Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft)
+        vbox.addWidget(header)
+
+        # --- Channels section ---
+        ch_lbl = QLabel("TEXT CHANNELS")
+        ch_lbl.setObjectName("section_label")
+        vbox.addWidget(ch_lbl)
+
+        self._ch_list = QListWidget()
+        self._ch_list.setObjectName("channel_list")
+        self._ch_list.setMaximumHeight(180)
+        for ch in self._cfg.channels:
+            item = QListWidgetItem(f"  # {ch}")
+            item.setData(Qt.ItemDataRole.UserRole, ch)
+            self._ch_list.addItem(item)
+        if self._ch_list.count():
+            self._ch_list.setCurrentRow(0)
+        self._ch_list.currentItemChanged.connect(self._switch_channel)
+        vbox.addWidget(self._ch_list)
+
+        # --- Users section ---
+        self._users_lbl = QLabel("ONLINE — 0")
+        self._users_lbl.setObjectName("section_label")
+        vbox.addWidget(self._users_lbl)
+
+        self._user_list = QListWidget()
+        self._user_list.setObjectName("channel_list")
+        vbox.addWidget(self._user_list, stretch=1)
+
+        # --- Current-user bar ---
+        user_bar = QWidget()
+        user_bar.setObjectName("user_bar")
+        user_bar.setFixedHeight(52)
+        hb = QHBoxLayout(user_bar)
+        hb.setContentsMargins(10, 0, 10, 0)
+
+        name_lbl = QLabel(f"🟢  {_escape(self._cfg.username)}")
+        name_lbl.setObjectName("own_username")
+        hb.addWidget(name_lbl)
+        hb.addStretch()
+
+        # Settings button (placeholder for future)
+        settings_btn = QPushButton("⚙")
+        settings_btn.setFixedSize(28, 28)
+        settings_btn.setToolTip("Settings")
+        settings_btn.setStyleSheet(
+            "QPushButton { background: transparent; color: #8e9297; font-size: 16px; border: none; }"
+            "QPushButton:hover { color: #dcddde; }"
+        )
+        settings_btn.clicked.connect(self._open_settings)
+        hb.addWidget(settings_btn)
+
+        vbox.addWidget(user_bar)
+        return sidebar
+
+    # ---- Chat panel -------------------------------------------------- #
+
+    def _make_chat_panel(self) -> QWidget:
+        panel = QWidget()
+        panel.setObjectName("chat_panel")
+        vbox = QVBoxLayout(panel)
+        vbox.setContentsMargins(0, 0, 0, 0)
+        vbox.setSpacing(0)
+
+        # Channel header bar
+        self._ch_header = QLabel(f"  # {self._channel}")
+        self._ch_header.setObjectName("channel_header")
+        self._ch_header.setFixedHeight(48)
+        self._ch_header.setAlignment(Qt.AlignmentFlag.AlignVCenter)
+        vbox.addWidget(self._ch_header)
+
+        # Chat message display
+        self._chat = QTextEdit()
+        self._chat.setObjectName("chat_display")
+        self._chat.setReadOnly(True)
+        vbox.addWidget(self._chat, stretch=1)
+
+        # Message input row
+        input_row = QWidget()
+        input_row.setObjectName("input_row")
+        hb = QHBoxLayout(input_row)
+        hb.setContentsMargins(16, 8, 16, 16)
+        hb.setSpacing(8)
+
+        self._input = QLineEdit()
+        self._input.setObjectName("message_input")
+        self._input.setPlaceholderText(f"Message  # {self._channel}")
+        self._input.returnPressed.connect(self._send)
+        hb.addWidget(self._input, stretch=1)
+
+        send_btn = QPushButton("↵ Send")
+        send_btn.setFixedHeight(42)
+        send_btn.setToolTip("Send message (Enter)")
+        send_btn.clicked.connect(self._send)
+        hb.addWidget(send_btn)
+
+        vbox.addWidget(input_row)
+        return panel
+
+    # ---------------------------------------------------------------- #
+    #  Network lifecycle                                                 #
+    # ---------------------------------------------------------------- #
+
+    def start_network(self):
+        """Call after show() — starts discovery and network threads."""
+        self._net.start()
+        self._disc.start()
+
+    # ---------------------------------------------------------------- #
+    #  Qt slots (always on main thread)                                  #
+    # ---------------------------------------------------------------- #
+
+    @pyqtSlot(object)
+    def _on_peer_joined(self, peer):
+        # Add to user list (avoid duplicates)
+        for i in range(self._user_list.count()):
+            if self._user_list.item(i).data(Qt.ItemDataRole.UserRole) == peer.peer_id:
+                return
+        item = QListWidgetItem(f"  🟢  {_escape(peer.username)}")
+        item.setData(Qt.ItemDataRole.UserRole, peer.peer_id)
+        self._user_list.addItem(item)
+        self._update_online_count()
+        self._append_system(f"<b>{_escape(peer.username)}</b> joined the network.")
+
+    @pyqtSlot(str)
+    def _on_peer_left(self, peer_id: str):
+        for i in range(self._user_list.count()):
+            item = self._user_list.item(i)
+            if item.data(Qt.ItemDataRole.UserRole) == peer_id:
+                username = item.text().strip().lstrip("🟢 ").strip()
+                self._user_list.takeItem(i)
+                self._append_system(f"<b>{_escape(username)}</b> left the network.")
+                break
+        self._update_online_count()
+
+    @pyqtSlot(object)
+    def _on_message(self, message):
+        """Show an incoming (or sent-by-us) message if it's for the active channel."""
+        if message.type == "system":
+            self._append_system(message.content)
+            return
+        if message.channel == self._channel:
+            is_self = message.sender_id == self._cfg.peer_id
+            self._append_msg(message.sender_name, message.content,
+                             message.timestamp, is_self=is_self)
+
+    # ---------------------------------------------------------------- #
+    #  User actions                                                      #
+    # ---------------------------------------------------------------- #
+
+    def _send(self):
+        text = self._input.text().strip()
+        if not text:
+            return
+        self._input.clear()
+
+        from src.core.messaging import Message
+        msg = Message.text(
+            sender_id   = self._cfg.peer_id,
+            sender_name = self._cfg.username,
+            channel     = self._channel,
+            content     = text,
+        )
+
+        # Render our own message immediately (no round-trip)
+        self._append_msg(msg.sender_name, msg.content, msg.timestamp, is_self=True)
+
+        # Store locally and broadcast
+        self._broker.store_message(msg)
+        self._net.broadcast(msg)
+
+    def _switch_channel(self, current, _previous):
+        if not current:
+            return
+        ch = current.data(Qt.ItemDataRole.UserRole)
+        self._channel = ch
+        self._ch_header.setText(f"  # {ch}")
+        self._input.setPlaceholderText(f"Message  # {ch}")
+
+        # Reload history for the selected channel
+        self._chat.clear()
+        for msg in self._broker.get_history(ch):
+            if msg.type == "system":
+                self._append_system(msg.content)
+            else:
+                is_self = msg.sender_id == self._cfg.peer_id
+                self._append_msg(msg.sender_name, msg.content, msg.timestamp, is_self=is_self)
+
+    def _open_settings(self):
+        new_name, ok = QInputDialog.getText(
+            self, "Settings", "Change your username:",
+            text=self._cfg.username,
+        )
+        if ok and new_name.strip():
+            self._cfg.username = new_name.strip()
+            # Broadcast updated presence so others see the new name
+            self._net.send_presence("online")
+            self._append_system(f"Username changed to <b>{_escape(new_name.strip())}</b>.")
+
+    # ---------------------------------------------------------------- #
+    #  Chat display helpers                                              #
+    # ---------------------------------------------------------------- #
+
+    def _append_msg(self, sender: str, content: str, ts: str, is_self: bool = False):
+        """Append one formatted chat message bubble."""
+        colour = "#5865f2" if is_self else "#00b0f4"
+        time   = _fmt_time(ts)
+        html_block = (
+            f'<div style="margin: 2px 16px 6px 16px;">'
+            f'  <span style="color:{colour}; font-weight:bold;">'
+            f'    {_escape(sender)}'
+            f'  </span>'
+            f'  <span style="color:#72767d; font-size:11px; margin-left:8px;">'
+            f'    {time}'
+            f'  </span>'
+            f'  <div style="color:#dcddde; margin-top:2px;">'
+            f'    {_escape(content)}'
+            f'  </div>'
+            f'</div>'
+        )
+        self._chat.append(html_block)
+        self._scroll_to_bottom()
+
+    def _append_system(self, html_content: str):
+        """Append a dimmed, centred system notification."""
+        html_block = (
+            f'<div style="text-align:center; margin:6px 0; color:#72767d; font-size:12px;">'
+            f'  ─── {html_content} ───'
+            f'</div>'
+        )
+        self._chat.append(html_block)
+        self._scroll_to_bottom()
+
+    def _scroll_to_bottom(self):
+        cur = self._chat.textCursor()
+        cur.movePosition(QTextCursor.MoveOperation.End)
+        self._chat.setTextCursor(cur)
+
+    def _update_online_count(self):
+        n = self._user_list.count()
+        self._users_lbl.setText(f"ONLINE — {n}")
+
+    # ---------------------------------------------------------------- #
+    #  Window events                                                     #
+    # ---------------------------------------------------------------- #
+
+    def closeEvent(self, event):
+        self._disc.stop()
+        self._net.stop()
+        event.accept()

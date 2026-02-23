@@ -1,0 +1,14 @@
+# LocalDiscord - P2P LAN Chat Application
+# Python >= 3.10 required
+
+# GUI framework - cross-platform, modern UI
+PyQt6>=6.4.0
+
+# End-to-end encryption (X25519 ECDH + AES-256-GCM)
+cryptography>=41.0.0
+
+# Local network service discovery via mDNS (optional, fallback to UDP broadcast)
+zeroconf>=0.131.0
+
+# --- Dev / testing dependencies ---
+pytest>=7.0.0

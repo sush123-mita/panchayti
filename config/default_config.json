@@ -1,0 +1,21 @@
+{
+  "app_name": "LocalDiscord",
+  "version": "1.0.0",
+  "network": {
+    "tcp_port": 55001,
+    "udp_discovery_port": 55000,
+    "discovery_interval_sec": 5,
+    "connection_timeout_sec": 10
+  },
+  "ui": {
+    "theme": "dark",
+    "font_size": 14,
+    "window_width": 1100,
+    "window_height": 700
+  },
+  "channels": [
+    "general",
+    "random",
+    "announcements"
+  ]
+}

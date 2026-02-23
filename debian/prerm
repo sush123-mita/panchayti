@@ -1,0 +1,26 @@
+#!/bin/bash
+# prerm — runs before the package files are removed.
+#
+# Removes the Python virtual environment that postinst created, since
+# dpkg does not track files created by maintainer scripts.
+
+set -e
+
+VENV_DIR="/usr/lib/localdiscord/venv"
+
+case "$1" in
+    remove|upgrade|deconfigure)
+        echo "==> Removing LocalDiscord virtual environment..."
+        rm -rf "$VENV_DIR"
+        ;;
+
+    failed-upgrade)
+        ;;
+
+    *)
+        echo "prerm called with unknown argument '$1'" >&2
+        exit 1
+        ;;
+esac
+
+exit 0

@@ -1,0 +1,2 @@
+[console_scripts]
+localdiscord = src.main:main
