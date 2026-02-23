@@ -1,3 +1,14 @@
+localdiscord (1.0.1) stable; urgency=low
+
+  * Fixed: own messages were rendered twice due to double signal emission.
+  * Fixed: incoming messages from peers were rendered twice.
+  * Fixed: silent TCP server failure now shows a user-visible error.
+  * Added: online users panel now shows each peer's IP address below their name.
+  * Added: "Searching for peers..." hint in sidebar when no peers connected.
+  * Added: system message includes IP when a peer connects or disconnects.
+
+ -- Your Name <you@example.com>  Sun, 23 Feb 2025 00:00:00 +0000
+
 localdiscord (1.0.0) stable; urgency=low
 
   * Initial release.
