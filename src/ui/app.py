@@ -43,6 +43,55 @@ from src.ui.styles import DARK_THEME
 
 
 # ------------------------------------------------------------------ #
+#  _PeerRow — custom widget shown for each online peer               #
+# ------------------------------------------------------------------ #
+
+class _PeerRow(QWidget):
+    """
+    One row in the online-users list.
+
+    Layout:
+        ●  Alice                ← green dot  +  bold username
+           192.168.1.42         ← dimmed IP address below the name
+    """
+
+    def __init__(self, username: str, ip: str, parent=None):
+        super().__init__(parent)
+        self.setToolTip(f"{username}  —  {ip}")
+
+        row = QHBoxLayout(self)
+        row.setContentsMargins(10, 5, 8, 5)
+        row.setSpacing(8)
+
+        # ── Green online dot ──────────────────────────────────────
+        dot = QLabel("●")
+        dot.setFixedWidth(14)
+        dot.setStyleSheet("color: #3ba55c; font-size: 13px; padding-top: 2px;")
+        row.addWidget(dot, alignment=Qt.AlignmentFlag.AlignTop)
+
+        # ── Name + IP stacked ─────────────────────────────────────
+        info = QWidget()
+        info.setStyleSheet("background: transparent;")
+        col = QVBoxLayout(info)
+        col.setContentsMargins(0, 0, 0, 0)
+        col.setSpacing(1)
+
+        name_lbl = QLabel(_escape(username))
+        name_lbl.setStyleSheet(
+            "color: #dcddde; font-weight: bold; font-size: 13px; background: transparent;"
+        )
+        col.addWidget(name_lbl)
+
+        ip_lbl = QLabel(ip)
+        ip_lbl.setStyleSheet(
+            "color: #72767d; font-size: 10px; background: transparent;"
+        )
+        col.addWidget(ip_lbl)
+
+        row.addWidget(info, stretch=1)
+
+
+# ------------------------------------------------------------------ #
 #  Signal bridge — safely cross the thread boundary                    #
 # ------------------------------------------------------------------ #
 
@@ -296,20 +345,33 @@ class MainWindow(QMainWindow):
         for i in range(self._user_list.count()):
             if self._user_list.item(i).data(Qt.ItemDataRole.UserRole) == peer.peer_id:
                 return
-        item = QListWidgetItem(f"  🟢  {_escape(peer.username)}")
+
+        # Create a blank list item sized to hold the custom widget
+        item = QListWidgetItem()
         item.setData(Qt.ItemDataRole.UserRole, peer.peer_id)
+        # Store username in display role so _on_peer_left can read it
+        item.setData(Qt.ItemDataRole.DisplayRole, peer.username)
+        item.setSizeHint(QSize(0, 52))          # height for two-line row
         self._user_list.addItem(item)
+
+        # Attach the custom name + IP widget to this item
+        row_widget = _PeerRow(peer.username, peer.ip)
+        self._user_list.setItemWidget(item, row_widget)
+
         self._update_online_count()
         # Hide the "searching…" hint once we have at least one peer
         self._no_peers_hint.setVisible(False)
-        self._append_system(f"<b>{_escape(peer.username)}</b> connected.")
+        self._append_system(
+            f"<b>{_escape(peer.username)}</b> connected "
+            f"<span style='color:#72767d;'>({_escape(peer.ip)})</span>"
+        )
 
     @pyqtSlot(str)
     def _on_peer_left(self, peer_id: str):
         for i in range(self._user_list.count()):
             item = self._user_list.item(i)
             if item.data(Qt.ItemDataRole.UserRole) == peer_id:
-                username = item.text().strip().lstrip("🟢 ").strip()
+                username = item.data(Qt.ItemDataRole.DisplayRole) or "Unknown"
                 self._user_list.takeItem(i)
                 self._append_system(f"<b>{_escape(username)}</b> disconnected.")
                 break

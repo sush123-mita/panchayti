@@ -70,6 +70,12 @@ QListWidget::item {
     margin: 1px 4px;
 }
 
+/* Items that use setItemWidget() (peer rows) need no padding —
+   the widget itself supplies its own margins.               */
+QListWidget::item[hasWidget="true"] {
+    padding: 0;
+}
+
 QListWidget::item:hover {
     background-color: #393c43;
     color: #dcddde;
