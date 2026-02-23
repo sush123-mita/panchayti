@@ -54,6 +54,7 @@ class _Bridge(QObject):
     peer_connected    = pyqtSignal(object)   # Peer
     peer_disconnected = pyqtSignal(str)      # peer_id
     message_received  = pyqtSignal(object)   # Message
+    network_error     = pyqtSignal(str)      # error message string
 
 
 # ------------------------------------------------------------------ #
@@ -108,9 +109,16 @@ class MainWindow(QMainWindow):
         # Wire network callbacks → bridge signals
         network.on_peer_connected    = self._bridge.peer_connected.emit
         network.on_peer_disconnected = self._bridge.peer_disconnected.emit
-        network.on_message_received  = self._bridge.message_received.emit
+        network.on_error             = self._bridge.network_error.emit
+        # on_message_received is intentionally NOT wired here.
+        # The broker listener below is the single render path for ALL messages
+        # (own sent + received from peers).  Wiring on_message_received too
+        # would fire the signal twice for every incoming message → doubled chat.
 
-        # Also notify UI when the broker emits (for messages sent by us)
+        # Connect error signal
+        self._bridge.network_error.connect(self._on_network_error)
+
+        # Single render path: store_message → broker listener → bridge.emit → _on_message
         message_broker.on_message(self._bridge.message_received.emit)
 
         self._build_ui()
@@ -186,6 +194,18 @@ class MainWindow(QMainWindow):
         self._user_list = QListWidget()
         self._user_list.setObjectName("channel_list")
         vbox.addWidget(self._user_list, stretch=1)
+
+        # Hint shown when no peers are connected yet
+        self._no_peers_hint = QLabel(
+            "  Searching for peers…\n"
+            "  Make sure both devices\n"
+            "  are on the same network."
+        )
+        self._no_peers_hint.setStyleSheet(
+            "color: #4f545c; font-size: 11px; padding: 6px 4px;"
+        )
+        self._no_peers_hint.setWordWrap(True)
+        vbox.addWidget(self._no_peers_hint)
 
         # --- Current-user bar ---
         user_bar = QWidget()
@@ -272,7 +292,7 @@ class MainWindow(QMainWindow):
 
     @pyqtSlot(object)
     def _on_peer_joined(self, peer):
-        # Add to user list (avoid duplicates)
+        # Avoid duplicates
         for i in range(self._user_list.count()):
             if self._user_list.item(i).data(Qt.ItemDataRole.UserRole) == peer.peer_id:
                 return
@@ -280,7 +300,9 @@ class MainWindow(QMainWindow):
         item.setData(Qt.ItemDataRole.UserRole, peer.peer_id)
         self._user_list.addItem(item)
         self._update_online_count()
-        self._append_system(f"<b>{_escape(peer.username)}</b> joined the network.")
+        # Hide the "searching…" hint once we have at least one peer
+        self._no_peers_hint.setVisible(False)
+        self._append_system(f"<b>{_escape(peer.username)}</b> connected.")
 
     @pyqtSlot(str)
     def _on_peer_left(self, peer_id: str):
@@ -289,13 +311,39 @@ class MainWindow(QMainWindow):
             if item.data(Qt.ItemDataRole.UserRole) == peer_id:
                 username = item.text().strip().lstrip("🟢 ").strip()
                 self._user_list.takeItem(i)
-                self._append_system(f"<b>{_escape(username)}</b> left the network.")
+                self._append_system(f"<b>{_escape(username)}</b> disconnected.")
                 break
         self._update_online_count()
+        # Show the hint again if the list is now empty
+        if self._user_list.count() == 0:
+            self._no_peers_hint.setVisible(True)
+
+    @pyqtSlot(str)
+    def _on_network_error(self, error_msg: str):
+        """Show a network error (port taken, firewall, etc.) in the chat."""
+        self._append_system(f"⚠ Network error: <b>{_escape(error_msg)}</b>")
+        # Also update the hint text so the user knows what happened
+        self._no_peers_hint.setText(
+            f"  ⚠ {error_msg}\n\n"
+            "  Check that port 55001 (TCP)\n"
+            "  and 55000 (UDP) are open\n"
+            "  in your firewall."
+        )
+        self._no_peers_hint.setStyleSheet(
+            "color: #ed4245; font-size: 11px; padding: 6px 4px;"
+        )
 
     @pyqtSlot(object)
     def _on_message(self, message):
-        """Show an incoming (or sent-by-us) message if it's for the active channel."""
+        """
+        Render one message in the chat display.
+
+        Called via:  broker.store_message → listener → bridge.emit → here
+        This is the ONLY place messages are rendered — both for our own
+        sent messages (main-thread signal, delivered synchronously) and
+        for messages from peers (worker-thread signal, delivered via the
+        Qt event queue on the main thread).
+        """
         if message.type == "system":
             self._append_system(message.content)
             return
@@ -322,10 +370,10 @@ class MainWindow(QMainWindow):
             content     = text,
         )
 
-        # Render our own message immediately (no round-trip)
-        self._append_msg(msg.sender_name, msg.content, msg.timestamp, is_self=True)
-
-        # Store locally and broadcast
+        # store_message fires the broker listener → bridge.message_received.emit
+        # → _on_message → _append_msg.  Because this runs on the main thread
+        # the signal is delivered synchronously, so the message appears
+        # immediately — no second direct call to _append_msg needed.
         self._broker.store_message(msg)
         self._net.broadcast(msg)
 

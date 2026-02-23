@@ -187,9 +187,16 @@ class NetworkManager:
         self._running  = False
 
         # --- Callbacks set by the UI (called from worker threads) ---
+        # These are emitted as Qt signals by MainWindow so they are
+        # delivered safely on the main thread via the queued-connection
+        # mechanism even though they are called here from worker threads.
         self.on_peer_connected:    Optional[Callable] = None
         self.on_peer_disconnected: Optional[Callable] = None
-        self.on_message_received:  Optional[Callable] = None
+        self.on_error:             Optional[Callable] = None
+        # NOTE: on_message_received is removed.  Incoming messages are
+        # notified through MessageBroker.store_message → broker listeners,
+        # which already fire the UI signal.  Adding a second path here
+        # caused every received message to appear twice in the chat.
 
     # ---------------------------------------------------------------- #
     #  Lifecycle                                                         #
@@ -269,7 +276,18 @@ class NetworkManager:
     def _server_loop(self):
         srv = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        srv.bind(("0.0.0.0", self._cfg.tcp_port))
+        try:
+            srv.bind(("0.0.0.0", self._cfg.tcp_port))
+        except OSError as exc:
+            # Port already in use or firewall blocking — report to the UI
+            msg = (
+                f"Cannot open TCP port {self._cfg.tcp_port}: {exc}. "
+                "Another instance may be running, or a firewall is blocking the port."
+            )
+            logger.error(msg)
+            if self.on_error:
+                self.on_error(msg)
+            return   # thread exits; no connections will be accepted
         srv.listen(64)
         srv.settimeout(1.0)
         logger.info(f"TCP server listening on 0.0.0.0:{self._cfg.tcp_port}")
@@ -379,9 +397,11 @@ class NetworkManager:
         if msg_type == "text":
             message = self._broker.process_incoming(peer_id, data)
             if message:
+                # store_message notifies ALL broker listeners, which includes
+                # the UI's bridge.message_received signal registered in app.py.
+                # Do NOT also call on_message_received — that was removed to
+                # prevent the signal firing twice and messages appearing doubled.
                 self._broker.store_message(message)
-                if self.on_message_received:
-                    self.on_message_received(message)
 
         elif msg_type == "presence":
             from src.core.peer import PeerStatus
