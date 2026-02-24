@@ -1,5 +1,5 @@
 Package: localdiscord
-Version: 1.0.3
+Version: 1.0.4
 Architecture: all
 Maintainer: Your Name <you@example.com>
 Installed-Size: PLACEHOLDER
@@ -15,7 +15,9 @@ Description: P2P LAN chat application with end-to-end encryption
  .
  Features:
   - Cross-subnet discovery via UDP multicast (works across VLANs)
-  - Text channels and private messaging
+  - Text channels and direct messages (DM)
+  - File transfer with inline image preview (up to 50 MB)
+  - Chat history persisted locally as JSON
   - Automatic peer discovery (UDP broadcast + multicast + mDNS)
   - Manual "Add Peer" button for direct IP connection
   - Optional relay server for restricted networks

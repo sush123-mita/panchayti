@@ -1,3 +1,17 @@
+localdiscord (1.0.4) stable; urgency=medium
+
+  * Added: Direct Messages — peers auto-appear in DM sidebar on connect,
+    single click to open private chat, green/grey online status indicator.
+  * Added: File transfer — attach and send files up to 50 MB via encrypted
+    TCP connection, received files saved to ~/.localdiscord/files/.
+  * Added: Inline image preview in chat for transferred image files.
+  * Added: Clickable file links in chat to open with system default app.
+  * Added: JSON-based chat history persistence (~/.localdiscord/messages.json),
+    messages survive app restarts with UUID-based deduplication.
+  * Changed: Chat display upgraded to QTextBrowser for clickable links.
+
+ -- Your Name <you@example.com>  Mon, 24 Feb 2026 00:00:00 +0000
+
 localdiscord (1.0.3) stable; urgency=medium
 
   * Added: UDP multicast discovery (239.192.55.1, RFC 2365) for automatic

@@ -290,7 +290,7 @@ class MainWindow(QMainWindow):
 
         self._user_list = QListWidget()
         self._user_list.setObjectName("channel_list")
-        self._user_list.itemDoubleClicked.connect(self._on_peer_double_clicked)
+        self._user_list.itemClicked.connect(self._on_peer_clicked)
         vbox.addWidget(self._user_list, stretch=1)
 
         # Hint shown when no peers are connected yet
@@ -418,7 +418,7 @@ class MainWindow(QMainWindow):
 
     @pyqtSlot(object)
     def _on_peer_joined(self, peer):
-        # Avoid duplicates
+        # Avoid duplicates in online list
         for i in range(self._user_list.count()):
             if self._user_list.item(i).data(Qt.ItemDataRole.UserRole) == peer.peer_id:
                 return
@@ -436,6 +436,13 @@ class MainWindow(QMainWindow):
 
         self._update_online_count()
         self._no_peers_hint.setVisible(False)
+
+        # Auto-create a DM entry so the user can chat privately right away
+        from src.core.messaging import dm_channel_id
+        dm_ch = dm_channel_id(self._cfg.peer_id, peer.peer_id)
+        self._ensure_dm_entry(dm_ch, peer.peer_id, peer.username)
+        self._update_dm_status(peer.peer_id, online=True)
+
         self._append_system(
             f"<b>{_escape(peer.username)}</b> connected "
             f"<span style='color:#72767d;'>({_escape(peer.ip)})</span>"
@@ -453,6 +460,9 @@ class MainWindow(QMainWindow):
         self._update_online_count()
         if self._user_list.count() == 0:
             self._no_peers_hint.setVisible(True)
+
+        # Grey out their DM entry
+        self._update_dm_status(peer_id, online=False)
 
     @pyqtSlot(str)
     def _on_network_error(self, error_msg: str):
@@ -498,8 +508,8 @@ class MainWindow(QMainWindow):
     #  DM management                                                     #
     # ---------------------------------------------------------------- #
 
-    def _on_peer_double_clicked(self, item: QListWidgetItem):
-        """Double-click a peer in the online list to open a DM."""
+    def _on_peer_clicked(self, item: QListWidgetItem):
+        """Single-click a peer in the online list to open their DM."""
         peer_id = item.data(Qt.ItemDataRole.UserRole)
         username = item.data(Qt.ItemDataRole.DisplayRole) or "Unknown"
         self._open_dm(peer_id, username)
@@ -509,13 +519,11 @@ class MainWindow(QMainWindow):
         from src.core.messaging import dm_channel_id
         dm_ch = dm_channel_id(self._cfg.peer_id, peer_id)
 
-        # Add to DM list if not already there
         self._ensure_dm_entry(dm_ch, peer_id, username)
 
         # Select the DM in the sidebar
         for i in range(self._dm_list.count()):
             if self._dm_list.item(i).data(Qt.ItemDataRole.UserRole) == dm_ch:
-                # Deselect channel list so both aren't highlighted
                 self._ch_list.clearSelection()
                 self._dm_list.setCurrentRow(i)
                 break
@@ -525,27 +533,45 @@ class MainWindow(QMainWindow):
         if dm_ch in self._active_dms:
             return
 
-        # For incoming DMs, the sender_id might be the other peer
-        # but we need to figure out the other peer's info
         other_id = peer_id
         other_name = username
         if peer_id == self._cfg.peer_id:
-            # This is our own sent message — extract the other peer from channel
             parts = dm_ch.split(":")[1:]
             for p in parts:
                 if p != self._cfg.peer_id:
                     other_id = p
-                    # Try to get their name from registry
                     peer_obj = self._peers.get(p)
                     other_name = peer_obj.username if peer_obj else p[:8]
                     break
 
         self._active_dms[dm_ch] = {"peer_id": other_id, "username": other_name}
 
-        item = QListWidgetItem(f"  @ {other_name}")
+        # Check if peer is currently online
+        is_online = self._peers.get(other_id) is not None
+        dot = "●" if is_online else "○"
+        dot_color = "#3ba55c" if is_online else "#72767d"
+
+        item = QListWidgetItem(f"  {dot}  {other_name}")
         item.setData(Qt.ItemDataRole.UserRole, dm_ch)
+        # Store peer_id in a secondary role for status updates
+        item.setData(Qt.ItemDataRole.ToolTipRole, other_id)
+        item.setForeground(QColor("#dcddde") if is_online else QColor("#72767d"))
         self._dm_list.addItem(item)
         self._no_dm_hint.setVisible(False)
+
+    def _update_dm_status(self, peer_id: str, online: bool):
+        """Update the green/grey dot and text colour on a DM entry."""
+        dot = "●" if online else "○"
+        color = QColor("#dcddde") if online else QColor("#72767d")
+        for i in range(self._dm_list.count()):
+            item = self._dm_list.item(i)
+            if item.data(Qt.ItemDataRole.ToolTipRole) == peer_id:
+                dm_ch = item.data(Qt.ItemDataRole.UserRole)
+                info = self._active_dms.get(dm_ch, {})
+                name = info.get("username", "DM")
+                item.setText(f"  {dot}  {name}")
+                item.setForeground(color)
+                break
 
     def _restore_dm_list(self):
         """Populate the DM sidebar from persisted message history."""
@@ -561,7 +587,6 @@ class MainWindow(QMainWindow):
                 continue
             peer_obj = self._peers.get(other_id)
             username = peer_obj.username if peer_obj else other_id[:8]
-            # Load a message to find the username
             rows = self._broker._storage.get_history(dm_ch, limit=1) if self._broker._storage else []
             for row in rows:
                 if row["sender_id"] != self._cfg.peer_id:
