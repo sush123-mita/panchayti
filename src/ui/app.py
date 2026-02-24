@@ -10,9 +10,12 @@ Layout (mimicking Discord)
 │  │ TEXT CHANNELS    │ │                                  ││
 │  │  # general  ◄   │ │   chat messages (scrollable)    ││
 │  │  # random       │ │                                  ││
-│  │  # announcements│ │─────────────────────────────────││
-│  │──────────────────│ │  [  Message #general …    ] [→] ││
-│  │ ONLINE — 2       │ └─────────────────────────────────┘│
+│  │──────────────────│ │─────────────────────────────────││
+│  │ DIRECT MESSAGES  │ │  [📎] [ Message #general … ] [→]││
+│  │  ● Alice         │ └─────────────────────────────────┘│
+│  │  ● Bob           │                                     │
+│  │──────────────────│                                     │
+│  │ ONLINE — 2       │                                     │
 │  │  🟢 Alice        │                                     │
 │  │  🟢 Bob          │                                     │
 │  │──────────────────│                                     │
@@ -27,21 +30,28 @@ Qt main thread via Qt signals (NetworkBridge).  Never touch QWidget
 objects directly from non-main threads.
 """
 
+import base64
 import html
+import mimetypes
+import os
 import socket
 import threading
+from pathlib import Path
 from typing import Optional
 
-from PyQt6.QtCore import Qt, QObject, pyqtSignal, pyqtSlot, QSize
-from PyQt6.QtGui import QFont, QTextCursor, QColor, QPalette, QIcon
+from PyQt6.QtCore import Qt, QObject, pyqtSignal, pyqtSlot, QSize, QUrl
+from PyQt6.QtGui import QFont, QTextCursor, QColor, QPalette, QIcon, QDesktopServices
 from PyQt6.QtWidgets import (
     QMainWindow, QWidget, QHBoxLayout, QVBoxLayout,
-    QLabel, QListWidget, QListWidgetItem, QTextEdit,
+    QLabel, QListWidget, QListWidgetItem, QTextBrowser,
     QLineEdit, QPushButton, QFrame, QSizePolicy,
-    QInputDialog, QMessageBox, QApplication,
+    QInputDialog, QMessageBox, QApplication, QFileDialog,
 )
 
 from src.ui.styles import DARK_THEME
+
+# Maximum file size for transfer (50 MB)
+_MAX_FILE_SIZE = 50 * 1024 * 1024
 
 
 # ------------------------------------------------------------------ #
@@ -125,13 +135,22 @@ def _escape(text: str) -> str:
     return html.escape(text)
 
 
+def _human_size(nbytes: int) -> str:
+    """Format byte count as a human-readable string."""
+    for unit in ("B", "KB", "MB", "GB"):
+        if nbytes < 1024:
+            return f"{nbytes:.1f} {unit}" if unit != "B" else f"{nbytes} {unit}"
+        nbytes /= 1024
+    return f"{nbytes:.1f} TB"
+
+
 # ------------------------------------------------------------------ #
 #  MainWindow                                                          #
 # ------------------------------------------------------------------ #
 
 class MainWindow(QMainWindow):
     """
-    Top-level window.  Wires UI ↔ business-logic objects together.
+    Top-level window.  Wires UI <-> business-logic objects together.
 
     Parameters
     ----------
@@ -150,6 +169,7 @@ class MainWindow(QMainWindow):
         self._broker  = message_broker
         self._cfg     = config
         self._channel = config.channels[0]   # currently viewed channel
+        self._is_dm   = False                # True when viewing a DM channel
 
         # --- Thread-safe Qt signal bridge ---
         self._bridge = _Bridge()
@@ -157,22 +177,31 @@ class MainWindow(QMainWindow):
         self._bridge.peer_disconnected.connect(self._on_peer_left)
         self._bridge.message_received.connect(self._on_message)
 
-        # Wire network callbacks → bridge signals
+        # Wire network callbacks -> bridge signals
         network.on_peer_connected    = self._bridge.peer_connected.emit
         network.on_peer_disconnected = self._bridge.peer_disconnected.emit
         network.on_error             = self._bridge.network_error.emit
-        # on_message_received is intentionally NOT wired here.
-        # The broker listener below is the single render path for ALL messages
-        # (own sent + received from peers).  Wiring on_message_received too
-        # would fire the signal twice for every incoming message → doubled chat.
 
         # Connect error signal
         self._bridge.network_error.connect(self._on_network_error)
 
-        # Single render path: store_message → broker listener → bridge.emit → _on_message
+        # Single render path: store_message -> broker listener -> bridge.emit -> _on_message
         message_broker.on_message(self._bridge.message_received.emit)
 
+        # Track which channels have been loaded from file
+        self._loaded_channels: set = set()
+
+        # DM tracking: dm_channel_id -> {"peer_id": ..., "username": ...}
+        self._active_dms: dict[str, dict] = {}
+
         self._build_ui()
+
+        # Restore DM conversations from persisted history
+        self._restore_dm_list()
+
+        # Load persisted history for the initial channel and render it
+        self._load_channel_history(self._channel)
+        self._render_channel_history(self._channel)
 
     # ---------------------------------------------------------------- #
     #  UI construction                                                   #
@@ -227,7 +256,7 @@ class MainWindow(QMainWindow):
 
         self._ch_list = QListWidget()
         self._ch_list.setObjectName("channel_list")
-        self._ch_list.setMaximumHeight(180)
+        self._ch_list.setMaximumHeight(140)
         for ch in self._cfg.channels:
             item = QListWidgetItem(f"  # {ch}")
             item.setData(Qt.ItemDataRole.UserRole, ch)
@@ -237,6 +266,23 @@ class MainWindow(QMainWindow):
         self._ch_list.currentItemChanged.connect(self._switch_channel)
         vbox.addWidget(self._ch_list)
 
+        # --- Direct Messages section ---
+        dm_lbl = QLabel("DIRECT MESSAGES")
+        dm_lbl.setObjectName("section_label")
+        vbox.addWidget(dm_lbl)
+
+        self._dm_list = QListWidget()
+        self._dm_list.setObjectName("channel_list")
+        self._dm_list.setMaximumHeight(160)
+        self._dm_list.currentItemChanged.connect(self._switch_dm)
+        vbox.addWidget(self._dm_list)
+
+        self._no_dm_hint = QLabel("  Click a peer to start DM")
+        self._no_dm_hint.setStyleSheet(
+            "color: #4f545c; font-size: 11px; padding: 4px 4px;"
+        )
+        vbox.addWidget(self._no_dm_hint)
+
         # --- Users section ---
         self._users_lbl = QLabel("ONLINE — 0")
         self._users_lbl.setObjectName("section_label")
@@ -244,6 +290,7 @@ class MainWindow(QMainWindow):
 
         self._user_list = QListWidget()
         self._user_list.setObjectName("channel_list")
+        self._user_list.itemDoubleClicked.connect(self._on_peer_double_clicked)
         vbox.addWidget(self._user_list, stretch=1)
 
         # Hint shown when no peers are connected yet
@@ -283,7 +330,7 @@ class MainWindow(QMainWindow):
         hb.addWidget(name_lbl)
         hb.addStretch()
 
-        # Settings button (placeholder for future)
+        # Settings button
         settings_btn = QPushButton("⚙")
         settings_btn.setFixedSize(28, 28)
         settings_btn.setToolTip("Settings")
@@ -313,10 +360,12 @@ class MainWindow(QMainWindow):
         self._ch_header.setAlignment(Qt.AlignmentFlag.AlignVCenter)
         vbox.addWidget(self._ch_header)
 
-        # Chat message display
-        self._chat = QTextEdit()
+        # Chat message display (QTextBrowser for clickable links)
+        self._chat = QTextBrowser()
         self._chat.setObjectName("chat_display")
         self._chat.setReadOnly(True)
+        self._chat.setOpenLinks(False)
+        self._chat.anchorClicked.connect(self._on_link_clicked)
         vbox.addWidget(self._chat, stretch=1)
 
         # Message input row
@@ -325,6 +374,19 @@ class MainWindow(QMainWindow):
         hb = QHBoxLayout(input_row)
         hb.setContentsMargins(16, 8, 16, 16)
         hb.setSpacing(8)
+
+        # File attach button
+        attach_btn = QPushButton("📎")
+        attach_btn.setObjectName("attach_btn")
+        attach_btn.setFixedSize(42, 42)
+        attach_btn.setToolTip("Attach a file")
+        attach_btn.setStyleSheet(
+            "QPushButton#attach_btn { background: #40444b; color: #dcddde; "
+            "font-size: 18px; border-radius: 8px; border: none; }"
+            "QPushButton#attach_btn:hover { background: #4f545c; }"
+        )
+        attach_btn.clicked.connect(self._attach_file)
+        hb.addWidget(attach_btn)
 
         self._input = QLineEdit()
         self._input.setObjectName("message_input")
@@ -364,9 +426,8 @@ class MainWindow(QMainWindow):
         # Create a blank list item sized to hold the custom widget
         item = QListWidgetItem()
         item.setData(Qt.ItemDataRole.UserRole, peer.peer_id)
-        # Store username in display role so _on_peer_left can read it
         item.setData(Qt.ItemDataRole.DisplayRole, peer.username)
-        item.setSizeHint(QSize(0, 52))          # height for two-line row
+        item.setSizeHint(QSize(0, 52))
         self._user_list.addItem(item)
 
         # Attach the custom name + IP widget to this item
@@ -374,7 +435,6 @@ class MainWindow(QMainWindow):
         self._user_list.setItemWidget(item, row_widget)
 
         self._update_online_count()
-        # Hide the "searching…" hint once we have at least one peer
         self._no_peers_hint.setVisible(False)
         self._append_system(
             f"<b>{_escape(peer.username)}</b> connected "
@@ -391,7 +451,6 @@ class MainWindow(QMainWindow):
                 self._append_system(f"<b>{_escape(username)}</b> disconnected.")
                 break
         self._update_online_count()
-        # Show the hint again if the list is now empty
         if self._user_list.count() == 0:
             self._no_peers_hint.setVisible(True)
 
@@ -399,7 +458,6 @@ class MainWindow(QMainWindow):
     def _on_network_error(self, error_msg: str):
         """Show a network error (port taken, firewall, etc.) in the chat."""
         self._append_system(f"⚠ Network error: <b>{_escape(error_msg)}</b>")
-        # Also update the hint text so the user knows what happened
         self._no_peers_hint.setText(
             f"  ⚠ {error_msg}\n\n"
             "  Check that port 55001 (TCP)\n"
@@ -415,19 +473,138 @@ class MainWindow(QMainWindow):
         """
         Render one message in the chat display.
 
-        Called via:  broker.store_message → listener → bridge.emit → here
+        Called via:  broker.store_message -> listener -> bridge.emit -> here
         This is the ONLY place messages are rendered — both for our own
-        sent messages (main-thread signal, delivered synchronously) and
-        for messages from peers (worker-thread signal, delivered via the
-        Qt event queue on the main thread).
+        sent messages and for messages from peers.
         """
         if message.type == "system":
             self._append_system(message.content)
             return
+
+        # If a DM arrives for a channel not yet in the sidebar, add it
+        if message.channel.startswith("dm:"):
+            self._ensure_dm_entry(message.channel, message.sender_id,
+                                  message.sender_name)
+
         if message.channel == self._channel:
             is_self = message.sender_id == self._cfg.peer_id
-            self._append_msg(message.sender_name, message.content,
-                             message.timestamp, is_self=is_self)
+            if message.type == "file":
+                self._append_file_msg(message, is_self=is_self)
+            else:
+                self._append_msg(message.sender_name, message.content,
+                                 message.timestamp, is_self=is_self)
+
+    # ---------------------------------------------------------------- #
+    #  DM management                                                     #
+    # ---------------------------------------------------------------- #
+
+    def _on_peer_double_clicked(self, item: QListWidgetItem):
+        """Double-click a peer in the online list to open a DM."""
+        peer_id = item.data(Qt.ItemDataRole.UserRole)
+        username = item.data(Qt.ItemDataRole.DisplayRole) or "Unknown"
+        self._open_dm(peer_id, username)
+
+    def _open_dm(self, peer_id: str, username: str):
+        """Create or switch to a DM conversation with a peer."""
+        from src.core.messaging import dm_channel_id
+        dm_ch = dm_channel_id(self._cfg.peer_id, peer_id)
+
+        # Add to DM list if not already there
+        self._ensure_dm_entry(dm_ch, peer_id, username)
+
+        # Select the DM in the sidebar
+        for i in range(self._dm_list.count()):
+            if self._dm_list.item(i).data(Qt.ItemDataRole.UserRole) == dm_ch:
+                # Deselect channel list so both aren't highlighted
+                self._ch_list.clearSelection()
+                self._dm_list.setCurrentRow(i)
+                break
+
+    def _ensure_dm_entry(self, dm_ch: str, peer_id: str, username: str):
+        """Add a DM entry to the sidebar if it doesn't exist yet."""
+        if dm_ch in self._active_dms:
+            return
+
+        # For incoming DMs, the sender_id might be the other peer
+        # but we need to figure out the other peer's info
+        other_id = peer_id
+        other_name = username
+        if peer_id == self._cfg.peer_id:
+            # This is our own sent message — extract the other peer from channel
+            parts = dm_ch.split(":")[1:]
+            for p in parts:
+                if p != self._cfg.peer_id:
+                    other_id = p
+                    # Try to get their name from registry
+                    peer_obj = self._peers.get(p)
+                    other_name = peer_obj.username if peer_obj else p[:8]
+                    break
+
+        self._active_dms[dm_ch] = {"peer_id": other_id, "username": other_name}
+
+        item = QListWidgetItem(f"  @ {other_name}")
+        item.setData(Qt.ItemDataRole.UserRole, dm_ch)
+        self._dm_list.addItem(item)
+        self._no_dm_hint.setVisible(False)
+
+    def _restore_dm_list(self):
+        """Populate the DM sidebar from persisted message history."""
+        dm_channels = self._broker.get_dm_channels()
+        for dm_ch in dm_channels:
+            parts = dm_ch.split(":")[1:]
+            other_id = None
+            for p in parts:
+                if p != self._cfg.peer_id:
+                    other_id = p
+                    break
+            if not other_id:
+                continue
+            peer_obj = self._peers.get(other_id)
+            username = peer_obj.username if peer_obj else other_id[:8]
+            # Load a message to find the username
+            rows = self._broker._storage.get_history(dm_ch, limit=1) if self._broker._storage else []
+            for row in rows:
+                if row["sender_id"] != self._cfg.peer_id:
+                    username = row["sender_name"]
+                    break
+            self._ensure_dm_entry(dm_ch, other_id, username)
+
+    def _switch_dm(self, current, _previous):
+        """Handle selecting a DM from the sidebar."""
+        if not current:
+            return
+        dm_ch = current.data(Qt.ItemDataRole.UserRole)
+        self._channel = dm_ch
+        self._is_dm = True
+
+        info = self._active_dms.get(dm_ch, {})
+        peer_name = info.get("username", "DM")
+        self._ch_header.setText(f"  @ {peer_name}")
+        self._input.setPlaceholderText(f"Message @{peer_name}")
+
+        # Deselect channel list
+        self._ch_list.clearSelection()
+
+        # Load and render history
+        self._load_channel_history(dm_ch)
+        self._render_channel_history(dm_ch)
+
+    def _switch_channel(self, current, _previous):
+        """Handle selecting a channel from the sidebar."""
+        if not current:
+            return
+        ch = current.data(Qt.ItemDataRole.UserRole)
+        self._channel = ch
+        self._is_dm = False
+        self._ch_header.setText(f"  # {ch}")
+        self._input.setPlaceholderText(f"Message  # {ch}")
+
+        # Deselect DM list
+        self._dm_list.clearSelection()
+
+        # Load persisted history from file if not yet loaded
+        self._load_channel_history(ch)
+        self._render_channel_history(ch)
 
     # ---------------------------------------------------------------- #
     #  User actions                                                      #
@@ -447,37 +624,76 @@ class MainWindow(QMainWindow):
             content     = text,
         )
 
-        # store_message fires the broker listener → bridge.message_received.emit
-        # → _on_message → _append_msg.  Because this runs on the main thread
-        # the signal is delivered synchronously, so the message appears
-        # immediately — no second direct call to _append_msg needed.
         self._broker.store_message(msg)
-        self._net.broadcast(msg)
 
-    def _switch_channel(self, current, _previous):
-        if not current:
+        if self._is_dm:
+            # Send only to the DM target peer
+            target_id = self._dm_target_peer_id()
+            if target_id:
+                self._net.send_to(target_id, msg)
+        else:
+            self._net.broadcast(msg)
+
+    def _dm_target_peer_id(self) -> Optional[str]:
+        """Extract the other peer's ID from the current DM channel."""
+        info = self._active_dms.get(self._channel)
+        if info:
+            return info["peer_id"]
+        return None
+
+    def _attach_file(self):
+        """Open a file picker, encode the file, and send it."""
+        file_path, _ = QFileDialog.getOpenFileName(
+            self, "Select File to Send", "",
+            "All Files (*);;Images (*.png *.jpg *.jpeg *.gif *.bmp *.webp)"
+        )
+        if not file_path:
             return
-        ch = current.data(Qt.ItemDataRole.UserRole)
-        self._channel = ch
-        self._ch_header.setText(f"  # {ch}")
-        self._input.setPlaceholderText(f"Message  # {ch}")
 
-        # Reload history for the selected channel
-        self._chat.clear()
-        for msg in self._broker.get_history(ch):
-            if msg.type == "system":
-                self._append_system(msg.content)
-            else:
-                is_self = msg.sender_id == self._cfg.peer_id
-                self._append_msg(msg.sender_name, msg.content, msg.timestamp, is_self=is_self)
+        path = Path(file_path)
+        file_size = path.stat().st_size
+
+        if file_size > _MAX_FILE_SIZE:
+            QMessageBox.warning(
+                self, "File Too Large",
+                f"Maximum file size is {_human_size(_MAX_FILE_SIZE)}.\n"
+                f"Selected file is {_human_size(file_size)}.",
+            )
+            return
+
+        if file_size == 0:
+            QMessageBox.warning(self, "Empty File", "Cannot send an empty file.")
+            return
+
+        # Read and base64-encode
+        file_data = path.read_bytes()
+        b64_data = base64.b64encode(file_data).decode("ascii")
+
+        mime_type = mimetypes.guess_type(path.name)[0] or "application/octet-stream"
+
+        from src.core.messaging import Message
+        msg = Message.file(
+            sender_id   = self._cfg.peer_id,
+            sender_name = self._cfg.username,
+            channel     = self._channel,
+            file_name   = path.name,
+            file_size   = file_size,
+            file_type   = mime_type,
+            content     = b64_data,
+            file_path   = str(path),  # sender already has the file locally
+        )
+
+        self._broker.store_message(msg)
+
+        if self._is_dm:
+            target_id = self._dm_target_peer_id()
+            if target_id:
+                self._net.send_to(target_id, msg)
+        else:
+            self._net.broadcast(msg)
 
     def _add_peer_dialog(self):
-        """
-        Show a dialog for manually connecting to a peer by IP address.
-
-        This is the fallback when automatic discovery (broadcast/multicast/
-        mDNS) cannot reach a peer — e.g. across restricted subnets or VPNs.
-        """
+        """Show a dialog for manually connecting to a peer by IP address."""
         text, ok = QInputDialog.getText(
             self,
             "Add Peer",
@@ -490,7 +706,6 @@ class MainWindow(QMainWindow):
 
         text = text.strip()
 
-        # Parse IP and optional port.
         if ":" in text:
             parts = text.rsplit(":", 1)
             ip = parts[0]
@@ -506,7 +721,6 @@ class MainWindow(QMainWindow):
             ip   = text
             port = self._cfg.tcp_port
 
-        # Basic IP validation.
         try:
             socket.inet_aton(ip)
         except socket.error:
@@ -518,8 +732,6 @@ class MainWindow(QMainWindow):
 
         self._append_system(f"Connecting to {_escape(ip)}:{port} ...")
 
-        # Run the connection attempt in a background thread so the UI
-        # doesn't freeze while waiting for the TCP handshake.
         def _connect():
             success = self._net.connect_to_peer(ip, port)
             if not success:
@@ -540,9 +752,14 @@ class MainWindow(QMainWindow):
         )
         if ok and new_name.strip():
             self._cfg.username = new_name.strip()
-            # Broadcast updated presence so others see the new name
             self._net.send_presence("online")
             self._append_system(f"Username changed to <b>{_escape(new_name.strip())}</b>.")
+
+    def _on_link_clicked(self, url: QUrl):
+        """Handle clicks on file links in chat — open with system default."""
+        path = url.toLocalFile()
+        if path and Path(path).exists():
+            QDesktopServices.openUrl(url)
 
     # ---------------------------------------------------------------- #
     #  Chat display helpers                                              #
@@ -562,6 +779,58 @@ class MainWindow(QMainWindow):
             f'  </span>'
             f'  <div style="color:#dcddde; margin-top:2px;">'
             f'    {_escape(content)}'
+            f'  </div>'
+            f'</div>'
+        )
+        self._chat.append(html_block)
+        self._scroll_to_bottom()
+
+    def _append_file_msg(self, message, is_self: bool = False):
+        """Render a file transfer message with optional inline image preview."""
+        colour = "#5865f2" if is_self else "#00b0f4"
+        time   = _fmt_time(message.timestamp)
+        fname  = _escape(message.file_name or "file")
+        fsize  = _human_size(message.file_size or 0)
+        ftype  = message.file_type or ""
+        fpath  = message.file_path or ""
+
+        # Build the file info HTML
+        img_html = ""
+        if ftype.startswith("image/") and fpath and Path(fpath).exists():
+            # Inline image preview — use file:// URL
+            file_url = QUrl.fromLocalFile(fpath).toString()
+            img_html = (
+                f'<div style="margin: 4px 0;">'
+                f'  <img src="{file_url}" width="300" '
+                f'    style="border-radius: 8px; max-width: 300px;" />'
+                f'</div>'
+            )
+
+        # Make filename a clickable link if file exists on disk
+        if fpath and Path(fpath).exists():
+            file_url = QUrl.fromLocalFile(fpath).toString()
+            file_link = (
+                f'<a href="{file_url}" style="color: #00aff4; text-decoration: none;">'
+                f'📄 {fname}</a>'
+            )
+        else:
+            file_link = f'📄 {fname}'
+
+        html_block = (
+            f'<div style="margin: 2px 16px 6px 16px;">'
+            f'  <span style="color:{colour}; font-weight:bold;">'
+            f'    {_escape(message.sender_name)}'
+            f'  </span>'
+            f'  <span style="color:#72767d; font-size:11px; margin-left:8px;">'
+            f'    {time}'
+            f'  </span>'
+            f'{img_html}'
+            f'  <div style="background: #2f3136; border-radius: 8px; '
+            f'    padding: 8px 12px; margin-top: 4px; display: inline-block;">'
+            f'    {file_link}'
+            f'    <span style="color:#72767d; font-size:11px; margin-left:8px;">'
+            f'      {fsize}'
+            f'    </span>'
             f'  </div>'
             f'</div>'
         )
@@ -588,10 +857,40 @@ class MainWindow(QMainWindow):
         self._users_lbl.setText(f"ONLINE — {n}")
 
     # ---------------------------------------------------------------- #
+    #  History loading                                                   #
+    # ---------------------------------------------------------------- #
+
+    def _load_channel_history(self, channel: str):
+        """Load persisted messages from JSON into broker cache (once per channel)."""
+        if channel in self._loaded_channels:
+            return
+        self._loaded_channels.add(channel)
+        self._broker.load_history_from_db(channel)
+
+    def _render_channel_history(self, channel: str):
+        """Clear the chat display and render all cached messages for a channel."""
+        self._chat.clear()
+        messages = self._broker.get_history(channel)
+        for msg in messages:
+            if msg.type == "system":
+                self._append_system(msg.content)
+            elif msg.type == "file":
+                is_self = msg.sender_id == self._cfg.peer_id
+                self._append_file_msg(msg, is_self=is_self)
+            else:
+                is_self = msg.sender_id == self._cfg.peer_id
+                self._append_msg(msg.sender_name, msg.content, msg.timestamp, is_self=is_self)
+        db_count = len([m for m in messages if m.type in ("text", "file")])
+        if db_count > 0:
+            self._append_system(f"Loaded <b>{db_count}</b> message(s) from history")
+
+    # ---------------------------------------------------------------- #
     #  Window events                                                     #
     # ---------------------------------------------------------------- #
 
     def closeEvent(self, event):
         self._disc.stop()
         self._net.stop()
+        if self._broker._storage:
+            self._broker._storage.close()
         event.accept()

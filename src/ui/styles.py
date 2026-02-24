@@ -102,7 +102,7 @@ QLabel#channel_header {
     border-bottom: 1px solid #202225;
 }
 
-QTextEdit#chat_display {
+QTextEdit#chat_display, QTextBrowser#chat_display {
     background-color: #36393f;
     border: none;
     color: #dcddde;

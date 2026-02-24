@@ -48,9 +48,12 @@ def main():
         pass
 
     # --- Instantiate and wire up components ---
+    from src.core.storage import StorageManager
+
     encryption     = EncryptionManager()
     peer_registry  = PeerRegistry()
-    message_broker = MessageBroker(encryption, peer_registry)
+    storage        = StorageManager()   # SQLite persistence (~/.localdiscord/messages.db)
+    message_broker = MessageBroker(encryption, peer_registry, storage=storage)
     network        = NetworkManager(encryption, peer_registry, message_broker, config)
     discovery      = DiscoveryManager(peer_registry, network, config)
 

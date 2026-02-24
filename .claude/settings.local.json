@@ -3,7 +3,9 @@
     "allow": [
       "Bash(wsl:*)",
       "Bash(wsl -l:*)",
-      "Bash(python:*)"
+      "Bash(python:*)",
+      "Bash(git add:*)",
+      "Bash(git commit:*)"
     ]
   }
 }

@@ -1,6 +1,6 @@
 Metadata-Version: 2.4
 Name: localdiscord
-Version: 1.0.0
+Version: 1.0.3
 Summary: Peer-to-peer LAN chat application with end-to-end encryption
 Author: Your Name
 Classifier: Programming Language :: Python :: 3
@@ -10,6 +10,7 @@ Requires-Python: >=3.10
 Requires-Dist: PyQt6>=6.4.0
 Requires-Dist: cryptography>=41.0.0
 Requires-Dist: zeroconf>=0.131.0
+Requires-Dist: psutil>=5.9.0
 Provides-Extra: dev
 Requires-Dist: pytest>=7.0.0; extra == "dev"
 Dynamic: author

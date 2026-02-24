@@ -406,13 +406,9 @@ class NetworkManager:
         """Dispatch an incoming frame by message type."""
         msg_type = data.get("type")
 
-        if msg_type == "text":
+        if msg_type in ("text", "file"):
             message = self._broker.process_incoming(peer_id, data)
             if message:
-                # store_message notifies ALL broker listeners, which includes
-                # the UI's bridge.message_received signal registered in app.py.
-                # Do NOT also call on_message_received — that was removed to
-                # prevent the signal firing twice and messages appearing doubled.
                 self._broker.store_message(message)
 
         elif msg_type == "presence":
@@ -422,8 +418,6 @@ class NetworkManager:
             except ValueError:
                 status = PeerStatus.ONLINE
             self._peers.update_fields(peer_id, status=status)
-
-        # Future: handle "file", "voice_signal", "ack", etc.
 
     def _on_disconnect(self, peer_id: str):
         """Clean up after a peer disconnects."""
