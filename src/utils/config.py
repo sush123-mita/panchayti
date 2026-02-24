@@ -107,6 +107,22 @@ class Config:
         return self.get("network.discovery_interval_sec", 5)
 
     @property
+    def multicast_group(self) -> str:
+        return self.get("network.multicast_group", "239.192.55.1")
+
+    @property
+    def multicast_ttl(self) -> int:
+        return self.get("network.multicast_ttl", 4)
+
+    @property
+    def relay_host(self) -> str:
+        return self.get("network.relay_host", "")
+
+    @property
+    def relay_port(self) -> int:
+        return self.get("network.relay_port", 55002)
+
+    @property
     def channels(self) -> list[str]:
         return self.get("channels", ["general"])
 

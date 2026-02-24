@@ -20,7 +20,7 @@ from pathlib import Path
 
 # ── Config ────────────────────────────────────────────────────────────────────
 PKG_NAME    = "localdiscord"
-PKG_VERSION = "1.0.2"
+PKG_VERSION = "1.0.3"
 PKG_ARCH    = "all"
 
 ROOT     = Path(__file__).parent.resolve()
@@ -165,8 +165,8 @@ def collect_data() -> tuple[list, dict]:
         arc = f"./usr/lib/{PKG_NAME}/{rel.as_posix()}"
         add_file(arc, path.read_bytes())
 
-    # run.py  +  requirements.txt
-    for fname in ("run.py", "requirements.txt"):
+    # run.py  +  requirements.txt  +  relay_server.py
+    for fname in ("run.py", "requirements.txt", "relay_server.py"):
         p = ROOT / fname
         if p.exists():
             add_file(f"./usr/lib/{PKG_NAME}/{fname}", p.read_bytes())

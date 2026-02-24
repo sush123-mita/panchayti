@@ -18,11 +18,15 @@ import pytest
 # ------------------------------------------------------------------ #
 
 class _FakeConfig:
-    peer_id           = "aaaa-self"
-    username          = "Tester"
-    tcp_port          = 55001
-    udp_port          = 55000
+    peer_id            = "aaaa-self"
+    username           = "Tester"
+    tcp_port           = 55001
+    udp_port           = 55000
     discovery_interval = 5
+    multicast_group    = "239.192.55.1"
+    multicast_ttl      = 4
+    relay_host         = ""
+    relay_port         = 55002
 
     def get(self, key, default=None):
         return default
@@ -45,6 +49,11 @@ class _FakeNetworkManager:
 
     def connect_to_peer(self, ip, port):
         self.calls.append((ip, port))
+        # Small delay to simulate a real connection attempt.  Without this
+        # the dial thread completes instantly, removing its key from
+        # _attempted before the next _handle_announce call — which makes
+        # the duplicate-suppression test unreliable.
+        import time; time.sleep(0.05)
         return True
 
 
@@ -52,7 +61,9 @@ class _FakeNetworkManager:
 #  Import after stubs so discovery module initialises cleanly          #
 # ------------------------------------------------------------------ #
 
-from src.core.discovery import DiscoveryManager, _BROADCAST_MAGIC
+from src.core.discovery import (
+    DiscoveryManager, _BROADCAST_MAGIC, _get_broadcast_addresses,
+)
 
 
 # ------------------------------------------------------------------ #
@@ -81,6 +92,15 @@ class TestAnnouncePacket:
         msg = json.loads(dm._make_announce())
         assert msg["port"] == cfg.tcp_port
 
+    def test_announce_contains_ip(self):
+        """Announce should include the 'ip' field for relay forwarding."""
+        dm, cfg, _ = self._make_dm()
+        msg = json.loads(dm._make_announce())
+        assert "ip" in msg
+        # ip should be a non-empty string
+        assert isinstance(msg["ip"], str)
+        assert len(msg["ip"]) > 0
+
 
 class TestHandleAnnounce:
     def _make_dm(self):
@@ -90,13 +110,16 @@ class TestHandleAnnounce:
         dm  = DiscoveryManager(reg, net, cfg)
         return dm, cfg, reg, net
 
-    def _packet(self, peer_id="bbbb-remote", username="Alice", port=55001):
-        return json.dumps({
+    def _packet(self, peer_id="bbbb-remote", username="Alice", port=55001, ip=None):
+        data = {
             "magic":    _BROADCAST_MAGIC,
             "peer_id":  peer_id,
             "username": username,
             "port":     port,
-        }).encode()
+        }
+        if ip is not None:
+            data["ip"] = ip
+        return json.dumps(data).encode()
 
     def test_unknown_peer_triggers_connect(self):
         dm, cfg, reg, net = self._make_dm()
@@ -144,3 +167,40 @@ class TestHandleAnnounce:
         dm._handle_announce(b"not json {{{{", "192.168.1.99")
         import time; time.sleep(0.1)
         assert net.calls == []
+
+    def test_relay_forwarded_packet_uses_embedded_ip(self):
+        """
+        When a packet contains an 'ip' field (relay-forwarded), the
+        handler should connect to that IP, not the socket sender_ip.
+        """
+        dm, cfg, reg, net = self._make_dm()
+        # The "ip" field is the real peer IP; sender_ip is the relay.
+        pkt = self._packet(
+            peer_id="cccc-relay-peer", username="Bob",
+            port=55001, ip="192.168.20.5",
+        )
+        dm._handle_announce(pkt, "10.0.0.1")  # 10.0.0.1 = relay IP
+        import time; time.sleep(0.1)
+        # Should connect to the embedded IP, NOT the relay
+        assert ("192.168.20.5", 55001) in net.calls
+        assert ("10.0.0.1", 55001) not in net.calls
+
+
+class TestBroadcastAddresses:
+    def test_returns_at_least_one_address(self):
+        addrs = _get_broadcast_addresses("192.168.1.42")
+        assert len(addrs) >= 1
+
+    def test_fallback_contains_valid_broadcast(self):
+        """Without psutil, should fall back to /24 heuristic."""
+        addrs = _get_broadcast_addresses("192.168.1.42")
+        # Should contain either the /24 broadcast or the global fallback
+        assert any(
+            a in ("192.168.1.255", "255.255.255.255")
+            for a in addrs
+        )
+
+    def test_loopback_fallback(self):
+        """Loopback addresses should still return something usable."""
+        addrs = _get_broadcast_addresses("127.0.0.1")
+        assert len(addrs) >= 1

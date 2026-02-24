@@ -1,21 +1,24 @@
 Package: localdiscord
-Version: 1.0.2
+Version: 1.0.3
 Architecture: all
 Maintainer: Your Name <you@example.com>
 Installed-Size: PLACEHOLDER
 Depends: python3 (>= 3.10), python3-venv, python3-pip, libgl1
-Recommends: python3-pyqt6
+Recommends: python3-pyqt6, python3-psutil
 Section: net
 Priority: optional
 Homepage: https://github.com/yourname/localdiscord
 Description: P2P LAN chat application with end-to-end encryption
  LocalDiscord is a peer-to-peer chat application designed for local area
  networks (LAN). No central server is needed — peers discover each other
- automatically via UDP broadcast and mDNS.
+ automatically via UDP broadcast, multicast, and mDNS.
  .
  Features:
+  - Cross-subnet discovery via UDP multicast (works across VLANs)
   - Text channels and private messaging
-  - Automatic peer discovery (UDP broadcast + mDNS)
+  - Automatic peer discovery (UDP broadcast + multicast + mDNS)
+  - Manual "Add Peer" button for direct IP connection
+  - Optional relay server for restricted networks
   - End-to-end encryption (X25519 ECDH + AES-256-GCM)
   - Discord-inspired dark-theme Qt6 user interface
   - No configuration required — works out of the box on a LAN

@@ -28,6 +28,8 @@ objects directly from non-main threads.
 """
 
 import html
+import socket
+import threading
 from typing import Optional
 
 from PyQt6.QtCore import Qt, QObject, pyqtSignal, pyqtSlot, QSize
@@ -256,6 +258,19 @@ class MainWindow(QMainWindow):
         self._no_peers_hint.setWordWrap(True)
         vbox.addWidget(self._no_peers_hint)
 
+        # --- Manual peer connection button ---
+        add_peer_btn = QPushButton("+ Add Peer")
+        add_peer_btn.setObjectName("add_peer_btn")
+        add_peer_btn.setFixedHeight(32)
+        add_peer_btn.setToolTip("Connect to a peer by IP address (for cross-subnet)")
+        add_peer_btn.setStyleSheet(
+            "QPushButton { background: #40444b; color: #8e9297; font-size: 12px; "
+            "             margin: 4px 8px; border-radius: 4px; }"
+            "QPushButton:hover { background: #4f545c; color: #dcddde; }"
+        )
+        add_peer_btn.clicked.connect(self._add_peer_dialog)
+        vbox.addWidget(add_peer_btn)
+
         # --- Current-user bar ---
         user_bar = QWidget()
         user_bar.setObjectName("user_bar")
@@ -455,6 +470,68 @@ class MainWindow(QMainWindow):
             else:
                 is_self = msg.sender_id == self._cfg.peer_id
                 self._append_msg(msg.sender_name, msg.content, msg.timestamp, is_self=is_self)
+
+    def _add_peer_dialog(self):
+        """
+        Show a dialog for manually connecting to a peer by IP address.
+
+        This is the fallback when automatic discovery (broadcast/multicast/
+        mDNS) cannot reach a peer — e.g. across restricted subnets or VPNs.
+        """
+        text, ok = QInputDialog.getText(
+            self,
+            "Add Peer",
+            "Enter the peer's IP address (and optionally :port):\n"
+            "Examples:  192.168.20.5   or   10.0.1.100:55001",
+            text="",
+        )
+        if not ok or not text.strip():
+            return
+
+        text = text.strip()
+
+        # Parse IP and optional port.
+        if ":" in text:
+            parts = text.rsplit(":", 1)
+            ip = parts[0]
+            try:
+                port = int(parts[1])
+            except ValueError:
+                QMessageBox.warning(
+                    self, "Invalid Port",
+                    f"'{parts[1]}' is not a valid port number.",
+                )
+                return
+        else:
+            ip   = text
+            port = self._cfg.tcp_port
+
+        # Basic IP validation.
+        try:
+            socket.inet_aton(ip)
+        except socket.error:
+            QMessageBox.warning(
+                self, "Invalid IP",
+                f"'{ip}' is not a valid IPv4 address.",
+            )
+            return
+
+        self._append_system(f"Connecting to {_escape(ip)}:{port} ...")
+
+        # Run the connection attempt in a background thread so the UI
+        # doesn't freeze while waiting for the TCP handshake.
+        def _connect():
+            success = self._net.connect_to_peer(ip, port)
+            if not success:
+                self._bridge.network_error.emit(
+                    f"Could not connect to {ip}:{port}. "
+                    "Make sure the peer is running and the firewall "
+                    f"allows TCP port {port}."
+                )
+
+        threading.Thread(
+            target=_connect, daemon=True, name=f"manual-dial-{ip}",
+        ).start()
 
     def _open_settings(self):
         new_name, ok = QInputDialog.getText(

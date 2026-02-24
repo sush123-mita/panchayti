@@ -10,5 +10,8 @@ cryptography>=41.0.0
 # Local network service discovery via mDNS (optional, fallback to UDP broadcast)
 zeroconf>=0.131.0
 
+# Interface detection for multi-subnet broadcast (optional, fallback to /24 heuristic)
+psutil>=5.9.0
+
 # --- Dev / testing dependencies ---
 pytest>=7.0.0

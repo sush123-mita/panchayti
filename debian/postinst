@@ -44,13 +44,14 @@ case "$1" in
         "$VENV_DIR/bin/pip" install --quiet --upgrade pip
 
         # --- Install Python dependencies ---
-        echo "==> Installing Python dependencies (PyQt6, cryptography, zeroconf)..."
+        echo "==> Installing Python dependencies (PyQt6, cryptography, zeroconf, psutil)..."
         echo "    This may take a minute on the first install..."
 
         "$VENV_DIR/bin/pip" install --quiet \
             "PyQt6>=6.4.0" \
             "cryptography>=41.0.0" \
-            "zeroconf>=0.131.0"
+            "zeroconf>=0.131.0" \
+            "psutil>=5.9.0"
 
         echo "==> Python dependencies installed."
 

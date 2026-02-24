@@ -1,3 +1,19 @@
+localdiscord (1.0.3) stable; urgency=medium
+
+  * Added: UDP multicast discovery (239.192.55.1, RFC 2365) for automatic
+    cross-subnet peer discovery without configuration.
+  * Added: Enhanced broadcast detection — sends to all interface broadcast
+    addresses instead of assuming /24 subnet mask.
+  * Added: "Add Peer" button in sidebar for manual IP-based connection.
+  * Added: Optional relay server (relay_server.py) for networks where
+    multicast is blocked.
+  * Added: Config options: network.multicast_group, network.multicast_ttl,
+    network.relay_host, network.relay_port.
+  * Fixed: _broadcast_addr() assumed /24 subnet mask, breaking broadcast
+    on non-/24 networks.
+
+ -- Your Name <you@example.com>  Mon, 24 Feb 2026 00:00:00 +0000
+
 localdiscord (1.0.2) stable; urgency=medium
 
   * Fixed: initiated P2P connections dropped after ~10s of inactivity because
