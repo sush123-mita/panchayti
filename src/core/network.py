@@ -318,15 +318,24 @@ class NetworkManager:
         _send_frame(sock, self._make_hello())
         peer_hello = _recv_frame(sock)
         if peer_hello and peer_hello.get("type") == "handshake":
+            # Clear the connect timeout so the I/O recv thread can block
+            # indefinitely waiting for messages instead of disconnecting
+            # after the timeout expires during periods of inactivity.
+            sock.settimeout(None)
             self._finalise(sock, peer_hello, ip)
         else:
             sock.close()
 
     def _handshake_as_responder(self, sock: socket.socket, ip: str):
         """Responder waits for HELLO, then replies."""
+        # Set a handshake timeout so stalled clients don't block a thread
+        # forever.  Accepted sockets have no timeout by default.
+        sock.settimeout(self._cfg.get("network.connection_timeout_sec", 10))
         peer_hello = _recv_frame(sock)
         if peer_hello and peer_hello.get("type") == "handshake":
             _send_frame(sock, self._make_hello())
+            # Clear the handshake timeout before handing off to I/O threads.
+            sock.settimeout(None)
             self._finalise(sock, peer_hello, ip)
         else:
             sock.close()
@@ -349,36 +358,39 @@ class NetworkManager:
             sock.close()
             return
 
-        # Avoid duplicate connections
+        # Atomic check-and-register: hold the lock through the entire
+        # registration so that two simultaneous connections between the
+        # same pair of peers cannot both pass the duplicate check.
         with self._h_lock:
             if peer_id in self._handlers:
                 sock.close()
                 return
 
-        # Establish ECDH session
-        self._enc.establish_session(peer_id, peer_hello["public_key"])
+            # Establish ECDH session
+            self._enc.establish_session(peer_id, peer_hello["public_key"])
 
-        # Register peer in the registry
-        from src.core.peer import Peer, PeerStatus
-        peer = Peer(
-            peer_id      = peer_id,
-            username     = peer_hello.get("username", "Unknown"),
-            ip           = ip,
-            port         = peer_hello.get("port", self._cfg.tcp_port),
-            status       = PeerStatus.ONLINE,
-            is_encrypted = True,
-        )
-        self._peers.add_or_update(peer)
+            # Register peer in the registry
+            from src.core.peer import Peer, PeerStatus
+            peer = Peer(
+                peer_id      = peer_id,
+                username     = peer_hello.get("username", "Unknown"),
+                ip           = ip,
+                port         = peer_hello.get("port", self._cfg.tcp_port),
+                status       = PeerStatus.ONLINE,
+                is_encrypted = True,
+            )
+            self._peers.add_or_update(peer)
 
-        # Create & start I/O handler
-        handler = ConnectionHandler(
-            sock       = sock,
-            peer_id    = peer_id,
-            on_message = self._on_frame,
-            on_close   = self._on_disconnect,
-        )
-        with self._h_lock:
+            # Create I/O handler and register atomically
+            handler = ConnectionHandler(
+                sock       = sock,
+                peer_id    = peer_id,
+                on_message = self._on_frame,
+                on_close   = self._on_disconnect,
+            )
             self._handlers[peer_id] = handler
+
+        # Start I/O threads outside the lock
         handler.start()
 
         logger.info(f"Connected to {peer.username} @ {ip} (encrypted)")

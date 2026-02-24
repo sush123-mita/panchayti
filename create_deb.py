@@ -20,7 +20,7 @@ from pathlib import Path
 
 # ── Config ────────────────────────────────────────────────────────────────────
 PKG_NAME    = "localdiscord"
-PKG_VERSION = "1.0.1"
+PKG_VERSION = "1.0.2"
 PKG_ARCH    = "all"
 
 ROOT     = Path(__file__).parent.resolve()

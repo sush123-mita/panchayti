@@ -1,3 +1,15 @@
+localdiscord (1.0.2) stable; urgency=medium
+
+  * Fixed: initiated P2P connections dropped after ~10s of inactivity because
+    the TCP connect timeout was never cleared on the socket.
+  * Fixed: TOCTOU race in connection finalisation that caused duplicate
+    connections and orphaned sockets when peers discovered each other
+    simultaneously.
+  * Fixed: responder-side TCP handshake now has a timeout so stalled clients
+    cannot block a handler thread forever.
+
+ -- Your Name <you@example.com>  Mon, 24 Feb 2026 00:00:00 +0000
+
 localdiscord (1.0.1) stable; urgency=low
 
   * Fixed: own messages were rendered twice due to double signal emission.

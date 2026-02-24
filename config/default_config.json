@@ -1,6 +1,6 @@
 {
   "app_name": "LocalDiscord",
-  "version": "1.0.0",
+  "version": "1.0.2",
   "network": {
     "tcp_port": 55001,
     "udp_discovery_port": 55000,

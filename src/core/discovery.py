@@ -176,11 +176,23 @@ class DiscoveryManager:
 
         logger.info(f"Discovered {msg.get('username', '?')} @ {sender_ip}:{tcp_port}")
         threading.Thread(
-            target=self._net.connect_to_peer,
-            args=(sender_ip, tcp_port),
+            target=self._try_connect,
+            args=(sender_ip, tcp_port, key),
             daemon=True,
             name=f"dial-{sender_ip}",
         ).start()
+
+    def _try_connect(self, ip: str, port: int, key: str):
+        """
+        Attempt a TCP connection and, regardless of success or failure,
+        remove the key from _attempted so the next UDP broadcast can
+        trigger a fresh retry if needed.  If the connection succeeded
+        the peer will appear in _peers, and _handle_announce will skip
+        them via the peer_id check before we ever reach _attempted again.
+        """
+        self._net.connect_to_peer(ip, port)
+        with self._attempt_lock:
+            self._attempted.discard(key)
 
     def _make_announce(self) -> bytes:
         return json.dumps({
@@ -262,8 +274,8 @@ class DiscoveryManager:
 
             logger.info(f"mDNS discovered peer {peer_id[:8]} @ {ip}:{tcp_port}")
             threading.Thread(
-                target=self._net.connect_to_peer,
-                args=(ip, tcp_port),
+                target=self._try_connect,
+                args=(ip, tcp_port, key),
                 daemon=True,
             ).start()
         except Exception as e:
