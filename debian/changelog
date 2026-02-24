@@ -1,3 +1,13 @@
+localdiscord (1.0.5) stable; urgency=medium
+
+  * Added: WhatsApp-style per-message delete — right-click any message to
+    "Delete for me" (local only) or "Delete for everyone" (propagated to peers).
+  * Added: Deleted messages show an italic "This message was deleted" placeholder.
+  * Added: New "delete" message type in P2P protocol for cross-peer deletion
+    with sender validation (only original sender can delete for everyone).
+
+ -- Your Name <you@example.com>  Tue, 24 Feb 2026 00:00:00 +0000
+
 localdiscord (1.0.4) stable; urgency=medium
 
   * Added: Direct Messages — peers auto-appear in DM sidebar on connect,

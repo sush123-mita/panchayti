@@ -131,6 +131,22 @@ class StorageManager:
             return list({m["channel"] for m in self._messages
                          if m["channel"].startswith("dm:")})
 
+    def mark_message_deleted(self, message_id: str):
+        """Soft-delete a single message by setting its 'deleted' flag."""
+        with self._lock:
+            for m in self._messages:
+                if m["id"] == message_id:
+                    m["deleted"] = True
+                    break
+        self._flush_to_disk()
+
+    def delete_channel_history(self, channel: str):
+        """Remove all messages for a channel from memory and disk."""
+        with self._lock:
+            self._messages = [m for m in self._messages if m["channel"] != channel]
+            self._seen_ids = {m["id"] for m in self._messages}
+        self._flush_to_disk()
+
     def close(self):
         """Shut down the writer thread and do a final flush."""
         self._write_queue.put(None)  # sentinel

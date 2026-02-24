@@ -61,6 +61,9 @@ class Message:
     file_type: Optional[str] = None     # MIME type, e.g. "image/png"
     file_path: Optional[str] = None     # local path after saving to disk
 
+    # Soft-delete flag
+    deleted: bool = False
+
     # ---- Factory helpers ------------------------------------------ #
 
     @staticmethod
@@ -85,6 +88,20 @@ class Message:
             channel     = "*",
             timestamp   = _now(),
             content     = content,
+        )
+
+    @staticmethod
+    def delete(sender_id: str, sender_name: str, channel: str,
+               target_message_id: str) -> "Message":
+        """Create a delete command message. *target_message_id* is the ID to delete."""
+        return Message(
+            id          = str(uuid.uuid4()),
+            type        = "delete",
+            sender_id   = sender_id,
+            sender_name = sender_name,
+            channel     = channel,
+            timestamp   = _now(),
+            content     = target_message_id,
         )
 
     @staticmethod
@@ -128,6 +145,8 @@ class Message:
             d["file_name"] = self.file_name
             d["file_size"] = self.file_size
             d["file_type"] = self.file_type
+        if self.deleted:
+            d["deleted"] = True
         return d
 
     @staticmethod
@@ -145,6 +164,7 @@ class Message:
             file_name   = d.get("file_name"),
             file_size   = d.get("file_size"),
             file_type   = d.get("file_type"),
+            deleted     = d.get("deleted", False),
         )
 
 
@@ -175,6 +195,9 @@ class MessageBroker:
 
         # Registered UI callbacks: fn(message: Message)
         self._listeners: List[Callable[[Message], None]] = []
+
+        # Delete event callbacks: fn(channel: str, message_id: str)
+        self._delete_listeners: List[Callable[[str, str], None]] = []
 
         # Ensure files directory exists
         self.FILES_DIR.mkdir(parents=True, exist_ok=True)
@@ -213,6 +236,8 @@ class MessageBroker:
                 record["file_size"] = message.file_size
                 record["file_type"] = message.file_type
                 record["file_path"] = message.file_path
+            if message.deleted:
+                record["deleted"] = True
             self._storage.write_message(record)
 
         for cb in self._listeners:
@@ -251,6 +276,44 @@ class MessageBroker:
         if not self._storage:
             return []
         return self._storage.get_dm_channels()
+
+    def delete_history(self, channel: str):
+        """Delete all messages for a channel from memory and storage."""
+        with self._hist_lock:
+            self._history.pop(channel, None)
+        if self._storage:
+            self._storage.delete_channel_history(channel)
+
+    def delete_message(self, channel: str, message_id: str):
+        """Soft-delete a single message in cache and storage."""
+        with self._hist_lock:
+            for msg in self._history.get(channel, []):
+                if msg.id == message_id:
+                    msg.deleted = True
+                    break
+        if self._storage:
+            self._storage.mark_message_deleted(message_id)
+
+    def find_message(self, channel: str, message_id: str) -> Optional[Message]:
+        """Look up a single message by ID in a channel's history."""
+        with self._hist_lock:
+            for msg in self._history.get(channel, []):
+                if msg.id == message_id:
+                    return msg
+        return None
+
+    def on_delete(self, callback: Callable[[str, str], None]):
+        """Register a callback for delete events: fn(channel, message_id)."""
+        self._delete_listeners.append(callback)
+
+    def _notify_delete(self, channel: str, message_id: str):
+        """Notify listeners of a message deletion."""
+        for cb in self._delete_listeners:
+            try:
+                cb(channel, message_id)
+            except Exception as e:
+                from src.utils.logger import get_logger
+                get_logger("messaging").error(f"Delete listener failed: {e}")
 
     # ---- File I/O ------------------------------------------------- #
 
@@ -338,4 +401,5 @@ def _msg_from_row(row: dict) -> Message:
         file_size   = row.get("file_size"),
         file_type   = row.get("file_type"),
         file_path   = row.get("file_path"),
+        deleted     = row.get("deleted", False),
     )

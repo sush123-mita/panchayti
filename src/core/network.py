@@ -411,6 +411,16 @@ class NetworkManager:
             if message:
                 self._broker.store_message(message)
 
+        elif msg_type == "delete":
+            message = self._broker.process_incoming(peer_id, data)
+            if message:
+                target_id = message.content  # ID of message to delete
+                channel = message.channel
+                target_msg = self._broker.find_message(channel, target_id)
+                if target_msg and target_msg.sender_id == message.sender_id:
+                    self._broker.delete_message(channel, target_id)
+                    self._broker._notify_delete(channel, target_id)
+
         elif msg_type == "presence":
             from src.core.peer import PeerStatus
             try:
