@@ -39,15 +39,20 @@ import threading
 from pathlib import Path
 from typing import Optional
 
-from PyQt6.QtCore import Qt, QObject, pyqtSignal, pyqtSlot, QSize, QUrl
+from PyQt6.QtCore import Qt, QObject, pyqtSignal, pyqtSlot, QSize, QUrl, QTimer
 from PyQt6.QtGui import QFont, QTextCursor, QColor, QPalette, QIcon, QDesktopServices, QCursor
 from PyQt6.QtWidgets import (
     QMainWindow, QWidget, QHBoxLayout, QVBoxLayout,
     QLabel, QListWidget, QListWidgetItem, QTextBrowser,
     QLineEdit, QPushButton, QFrame, QSizePolicy,
     QInputDialog, QMessageBox, QApplication, QFileDialog,
-    QMenu,
+    QMenu, QSystemTrayIcon,
 )
+try:
+    from PyQt6.QtMultimedia import QSoundEffect
+    _HAS_MULTIMEDIA = True
+except ImportError:
+    _HAS_MULTIMEDIA = False
 
 from src.ui.styles import DARK_THEME
 
@@ -200,10 +205,15 @@ class MainWindow(QMainWindow):
         # DM tracking: dm_channel_id -> {"peer_id": ..., "username": ...}
         self._active_dms: dict[str, dict] = {}
 
-        # Unread message counts per channel (for DM badges)
+        # Unread message counts per channel (for DM badges and channel badges)
         self._unread_counts: dict[str, int] = {}
 
+        # Last message preview per channel (for unread section)
+        self._last_msg_preview: dict[str, dict] = {}
+
         self._build_ui()
+        self._setup_tray_icon()
+        self._setup_notification_sound()
 
         # Restore DM conversations from persisted history
         self._restore_dm_list()
@@ -240,6 +250,72 @@ class MainWindow(QMainWindow):
             "Searching for peers on the local network…"
         )
 
+    # ---- System tray & notifications ---------------------------------- #
+
+    def _setup_tray_icon(self):
+        """Create a system tray icon for desktop notifications."""
+        self._tray = None
+        if not QSystemTrayIcon.isSystemTrayAvailable():
+            return
+        self._tray = QSystemTrayIcon(self)
+        # Use app icon if available, otherwise a default
+        icon = self.windowIcon()
+        if icon.isNull():
+            icon = QApplication.style().standardIcon(
+                QApplication.style().StandardPixmap.SP_ComputerIcon
+            )
+        self._tray.setIcon(icon)
+        self._tray.setToolTip(self._cfg.app_name)
+
+        # Tray menu
+        tray_menu = QMenu()
+        show_action = tray_menu.addAction("Show Window")
+        show_action.triggered.connect(self._show_from_tray)
+        quit_action = tray_menu.addAction("Quit")
+        quit_action.triggered.connect(QApplication.quit)
+        self._tray.setContextMenu(tray_menu)
+        self._tray.activated.connect(self._on_tray_activated)
+        self._tray.show()
+
+    def _show_from_tray(self):
+        """Restore window from tray."""
+        self.showNormal()
+        self.activateWindow()
+        self.raise_()
+
+    def _on_tray_activated(self, reason):
+        if reason == QSystemTrayIcon.ActivationReason.Trigger:
+            self._show_from_tray()
+
+    def _setup_notification_sound(self):
+        """Set up notification sound effect."""
+        self._notif_sound = None
+        if not _HAS_MULTIMEDIA:
+            return
+        # Look for a notification sound file in assets
+        sound_path = os.path.join(
+            os.path.dirname(os.path.dirname(os.path.dirname(__file__))),
+            "assets", "sounds", "notification.wav"
+        )
+        if os.path.exists(sound_path):
+            self._notif_sound = QSoundEffect()
+            self._notif_sound.setSource(QUrl.fromLocalFile(sound_path))
+            self._notif_sound.setVolume(0.5)
+
+    def _show_notification(self, title: str, body: str):
+        """Show a desktop notification and play sound."""
+        # Play notification sound
+        if _HAS_MULTIMEDIA and self._notif_sound and self._notif_sound.status() == QSoundEffect.Status.Ready:
+            self._notif_sound.play()
+
+        # Show tray notification if window is not focused
+        if self._tray and not self.isActiveWindow():
+            self._tray.showMessage(
+                title, body,
+                QSystemTrayIcon.MessageIcon.Information,
+                3000,  # 3 seconds
+            )
+
     # ---- Sidebar ----------------------------------------------------- #
 
     def _make_sidebar(self) -> QWidget:
@@ -257,6 +333,29 @@ class MainWindow(QMainWindow):
         header.setFixedHeight(48)
         header.setAlignment(Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft)
         vbox.addWidget(header)
+
+        # --- Unread Messages section (WhatsApp-style) ---
+        self._unread_section_lbl = QLabel("UNREAD MESSAGES")
+        self._unread_section_lbl.setObjectName("section_label")
+        self._unread_section_lbl.setStyleSheet(
+            "background-color: #2f3136; color: #faa61a; font-size: 11px; "
+            "font-weight: bold; padding: 12px 8px 4px 16px; letter-spacing: 0.8px;"
+        )
+        self._unread_section_lbl.setVisible(False)
+        vbox.addWidget(self._unread_section_lbl)
+
+        self._unread_list = QListWidget()
+        self._unread_list.setObjectName("channel_list")
+        self._unread_list.setMaximumHeight(120)
+        self._unread_list.setVisible(False)
+        self._unread_list.setStyleSheet(
+            "QListWidget { background-color: #2f3136; border: none; }"
+            "QListWidget::item { color: #ffffff; padding: 4px 8px 4px 12px; "
+            "border-radius: 4px; margin: 1px 4px; background-color: #32353b; }"
+            "QListWidget::item:hover { background-color: #393c43; }"
+        )
+        self._unread_list.itemClicked.connect(self._on_unread_item_clicked)
+        vbox.addWidget(self._unread_list)
 
         # --- Channels section ---
         ch_lbl = QLabel("TEXT CHANNELS")
@@ -549,14 +648,48 @@ class MainWindow(QMainWindow):
                 self._append_msg(message.sender_name, message.content,
                                  message.timestamp, is_self=is_self,
                                  msg_id=message.id, sender_id=message.sender_id)
+            # Notify if window not focused (even for current channel)
+            if message.sender_id != self._cfg.peer_id and not self.isActiveWindow():
+                preview = message.content[:80] if message.type == "text" else "Sent a file"
+                if message.channel.startswith("dm:"):
+                    self._show_notification(
+                        f"DM from {message.sender_name}", preview
+                    )
+                else:
+                    self._show_notification(
+                        f"#{message.channel}", f"{message.sender_name}: {preview}"
+                    )
         else:
             # Message for a channel/DM we're NOT viewing — track as unread
             if message.sender_id != self._cfg.peer_id:
                 self._unread_counts[message.channel] = (
                     self._unread_counts.get(message.channel, 0) + 1
                 )
+
+                # Store last message preview for unread section
+                preview = message.content[:60] if message.type == "text" else "Sent a file"
+                self._last_msg_preview[message.channel] = {
+                    "sender": message.sender_name,
+                    "preview": preview,
+                    "time": _fmt_time(message.timestamp),
+                }
+
                 if message.channel.startswith("dm:"):
                     self._update_dm_badge(message.channel)
+                else:
+                    self._update_channel_badge(message.channel)
+
+                self._refresh_unread_section()
+
+                # Desktop notification
+                if message.channel.startswith("dm:"):
+                    self._show_notification(
+                        f"DM from {message.sender_name}", preview
+                    )
+                else:
+                    self._show_notification(
+                        f"#{message.channel}", f"{message.sender_name}: {preview}"
+                    )
 
     # ---------------------------------------------------------------- #
     #  DM management                                                     #
@@ -598,7 +731,9 @@ class MainWindow(QMainWindow):
 
         # Clear unread badge
         self._unread_counts.pop(dm_ch, None)
+        self._last_msg_preview.pop(dm_ch, None)
         self._update_dm_badge(dm_ch)
+        self._refresh_unread_section()
 
         self._load_channel_history(dm_ch)
         self._render_channel_history(dm_ch)
@@ -668,6 +803,89 @@ class MainWindow(QMainWindow):
                     item.setForeground(color)
                 break
 
+    def _update_channel_badge(self, channel: str):
+        """Update the unread count badge on a text channel sidebar entry."""
+        count = self._unread_counts.get(channel, 0)
+        for i in range(self._ch_list.count()):
+            item = self._ch_list.item(i)
+            if item.data(Qt.ItemDataRole.UserRole) == channel:
+                if count > 0:
+                    item.setText(f"  # {channel}  ({count})")
+                    item.setForeground(QColor("#ffffff"))
+                else:
+                    item.setText(f"  # {channel}")
+                    item.setForeground(QColor("#8e9297"))
+                break
+
+    def _refresh_unread_section(self):
+        """Rebuild the unread messages section in the sidebar (WhatsApp-style)."""
+        self._unread_list.clear()
+
+        # Collect channels with unread messages
+        unread_channels = [
+            (ch, count) for ch, count in self._unread_counts.items()
+            if count > 0
+        ]
+
+        # Update tray tooltip with total unread
+        total_unread = sum(c for _, c in unread_channels)
+        if self._tray:
+            if total_unread > 0:
+                self._tray.setToolTip(f"{self._cfg.app_name} — {total_unread} unread")
+            else:
+                self._tray.setToolTip(self._cfg.app_name)
+
+        if not unread_channels:
+            self._unread_section_lbl.setVisible(False)
+            self._unread_list.setVisible(False)
+            return
+
+        self._unread_section_lbl.setVisible(True)
+        self._unread_list.setVisible(True)
+        self._unread_list.setMaximumHeight(min(len(unread_channels) * 44, 150))
+
+        # Sort by most recent (we don't have timestamps easily, so just iterate)
+        for ch, count in unread_channels:
+            preview_info = self._last_msg_preview.get(ch, {})
+            sender = preview_info.get("sender", "")
+            preview = preview_info.get("preview", "")
+            msg_time = preview_info.get("time", "")
+
+            if ch.startswith("dm:"):
+                info = self._active_dms.get(ch, {})
+                display_name = f"@ {info.get('username', 'DM')}"
+            else:
+                display_name = f"# {ch}"
+
+            # WhatsApp-style: name + count + time + preview
+            time_suffix = f"  {msg_time}" if msg_time else ""
+            line1 = f"{display_name}  [{count}]{time_suffix}"
+            line2 = f"{sender}: {preview}" if sender else preview
+            if len(line2) > 40:
+                line2 = line2[:37] + "..."
+
+            item = QListWidgetItem(f"{line1}\n{line2}")
+            item.setData(Qt.ItemDataRole.UserRole, ch)
+            item.setSizeHint(QSize(0, 42))
+            item.setForeground(QColor("#ffffff"))
+            self._unread_list.addItem(item)
+
+    def _on_unread_item_clicked(self, item: QListWidgetItem):
+        """Click an unread item to jump to that channel/DM."""
+        channel = item.data(Qt.ItemDataRole.UserRole)
+        if channel.startswith("dm:"):
+            info = self._active_dms.get(channel, {})
+            self._open_dm(info.get("peer_id", ""), info.get("username", "DM"))
+        else:
+            # Switch to the text channel
+            for i in range(self._ch_list.count()):
+                if self._ch_list.item(i).data(Qt.ItemDataRole.UserRole) == channel:
+                    self._dm_list.blockSignals(True)
+                    self._dm_list.setCurrentRow(-1)
+                    self._dm_list.blockSignals(False)
+                    self._ch_list.setCurrentRow(i)
+                    break
+
     def _restore_dm_list(self):
         """Populate the DM sidebar from persisted message history."""
         dm_channels = self._broker.get_dm_channels()
@@ -713,7 +931,9 @@ class MainWindow(QMainWindow):
 
         # Clear unread badge
         self._unread_counts.pop(dm_ch, None)
+        self._last_msg_preview.pop(dm_ch, None)
         self._update_dm_badge(dm_ch)
+        self._refresh_unread_section()
 
         # Deselect channel list without triggering _switch_channel
         self._ch_list.blockSignals(True)
@@ -734,8 +954,11 @@ class MainWindow(QMainWindow):
         self._ch_header.setText(f"# {ch}")
         self._input.setPlaceholderText(f"Message  # {ch}")
 
-        # Clear unread count
+        # Clear unread count and badge
         self._unread_counts.pop(ch, None)
+        self._last_msg_preview.pop(ch, None)
+        self._update_channel_badge(ch)
+        self._refresh_unread_section()
 
         # Deselect DM list without triggering _switch_dm
         self._dm_list.blockSignals(True)

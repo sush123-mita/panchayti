@@ -1,0 +1,21 @@
+# Environments
+venv/
+env/
+
+# Python artifacts
+**/__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Local Configs
+.claude/
+settings.local.json
+config/default_config.json
+
+# Build and Distribution
+dist/
+build/
+debian/
+*.deb
+*.egg-info/

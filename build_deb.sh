@@ -24,7 +24,7 @@ set -euo pipefail
 
 # ── Configurable variables ──────────────────────────────────────────────────
 PKG_NAME="localdiscord"
-PKG_VERSION="1.0.0"
+PKG_VERSION="1.0.6"
 PKG_ARCH="all"
 MAINTAINER="Your Name <you@example.com>"
 

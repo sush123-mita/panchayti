@@ -1,5 +1,5 @@
 Package: localdiscord
-Version: 1.0.5
+Version: 1.0.6
 Architecture: all
 Maintainer: Your Name <you@example.com>
 Installed-Size: PLACEHOLDER
@@ -22,5 +22,7 @@ Description: P2P LAN chat application with end-to-end encryption
   - Manual "Add Peer" button for direct IP connection
   - Optional relay server for restricted networks
   - End-to-end encryption (X25519 ECDH + AES-256-GCM)
+  - Desktop notifications via system tray with notification sound
+  - Unread message badges on channels and DMs (WhatsApp-style)
   - Discord-inspired dark-theme Qt6 user interface
   - No configuration required — works out of the box on a LAN

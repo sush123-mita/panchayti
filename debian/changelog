@@ -1,3 +1,19 @@
+localdiscord (1.0.6) stable; urgency=medium
+
+  * Added: Desktop notifications via QSystemTrayIcon — native OS popups
+    when messages arrive and the window is not focused.
+  * Added: Notification sound — pleasant two-tone chime plays on incoming
+    messages (requires PyQt6-Multimedia, graceful fallback if unavailable).
+  * Added: System tray icon with context menu (Show Window / Quit),
+    tooltip shows total unread message count.
+  * Added: "UNREAD MESSAGES" section at top of sidebar (WhatsApp-style) —
+    shows channels/DMs with unread counts, message preview, and timestamp.
+    Click to jump directly to the conversation.
+  * Added: Unread badges on text channels (previously only DMs had badges).
+  * Changed: Badges clear automatically when switching to a channel/DM.
+
+ -- Your Name <you@example.com>  Tue, 10 Mar 2026 00:00:00 +0000
+
 localdiscord (1.0.5) stable; urgency=medium
 
   * Added: WhatsApp-style per-message delete — right-click any message to

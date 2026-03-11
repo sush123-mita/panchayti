@@ -13,7 +13,7 @@ from setuptools import setup, find_packages
 
 setup(
     name            = "localdiscord",
-    version         = "1.0.5",
+    version         = "1.0.6",
     description     = "Peer-to-peer LAN chat application with end-to-end encryption",
     author          = "Your Name",
     python_requires = ">=3.10",
@@ -22,6 +22,7 @@ setup(
     package_data    = {"": ["config/*.json", "assets/**/*"]},
     install_requires = [
         "PyQt6>=6.4.0",
+        "PyQt6-Multimedia>=6.4.0",
         "cryptography>=41.0.0",
         "zeroconf>=0.131.0",
         "psutil>=5.9.0",

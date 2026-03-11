@@ -4,6 +4,10 @@
 # GUI framework - cross-platform, modern UI
 PyQt6>=6.4.0
 
+# Multimedia support for notification sounds
+PyQt6-Qt6>=6.4.0
+PyQt6-Multimedia>=6.4.0
+
 # End-to-end encryption (X25519 ECDH + AES-256-GCM)
 cryptography>=41.0.0
 
