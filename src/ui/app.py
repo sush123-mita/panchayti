@@ -56,8 +56,8 @@ except ImportError:
 
 from src.ui.styles import DARK_THEME
 
-# Maximum file size for transfer (50 MB)
-_MAX_FILE_SIZE = 50 * 1024 * 1024
+# Maximum file size for transfer (500 MB)
+_MAX_FILE_SIZE = 500 * 1024 * 1024
 
 
 # ------------------------------------------------------------------ #
@@ -69,8 +69,8 @@ class _PeerRow(QWidget):
     One row in the online-users list.
 
     Layout:
-        ●  Alice                ← green dot  +  bold username
-           192.168.1.42         ← dimmed IP address below the name
+        [A]  Alice              ← avatar circle  +  bold username
+             192.168.1.42       ← dimmed IP address below the name
     """
 
     def __init__(self, username: str, ip: str, parent=None):
@@ -78,31 +78,42 @@ class _PeerRow(QWidget):
         self.setToolTip(f"{username}  —  {ip}")
 
         row = QHBoxLayout(self)
-        row.setContentsMargins(10, 5, 8, 5)
-        row.setSpacing(8)
+        row.setContentsMargins(10, 6, 8, 6)
+        row.setSpacing(10)
 
-        # ── Green online dot ──────────────────────────────────────
-        dot = QLabel("●")
-        dot.setFixedWidth(14)
-        dot.setStyleSheet("color: #3ba55c; font-size: 13px; padding-top: 2px;")
-        row.addWidget(dot, alignment=Qt.AlignmentFlag.AlignTop)
+        # ── Avatar circle with initial ────────────────────────────
+        initial = username[0].upper() if username else "?"
+        # Use a consistent color based on the username
+        colors = ["#5865f2", "#57f287", "#fee75c", "#eb459e", "#ed4245",
+                  "#3ba55c", "#faa81a", "#e67e22", "#9b59b6", "#1abc9c"]
+        color_idx = sum(ord(c) for c in username) % len(colors)
+        avatar_color = colors[color_idx]
+
+        avatar = QLabel(initial)
+        avatar.setFixedSize(32, 32)
+        avatar.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        avatar.setStyleSheet(
+            f"background-color: {avatar_color}; color: #ffffff; "
+            f"font-weight: bold; font-size: 14px; border-radius: 16px;"
+        )
+        row.addWidget(avatar, alignment=Qt.AlignmentFlag.AlignVCenter)
 
         # ── Name + IP stacked ─────────────────────────────────────
         info = QWidget()
         info.setStyleSheet("background: transparent;")
         col = QVBoxLayout(info)
         col.setContentsMargins(0, 0, 0, 0)
-        col.setSpacing(1)
+        col.setSpacing(2)
 
         name_lbl = QLabel(_escape(username))
         name_lbl.setStyleSheet(
-            "color: #dcddde; font-weight: bold; font-size: 13px; background: transparent;"
+            "color: #f2f3f5; font-weight: bold; font-size: 13px; background: transparent;"
         )
         col.addWidget(name_lbl)
 
         ip_lbl = QLabel(ip)
         ip_lbl.setStyleSheet(
-            "color: #72767d; font-size: 10px; background: transparent;"
+            "color: #949ba4; font-size: 10px; background: transparent;"
         )
         col.addWidget(ip_lbl)
 
@@ -120,6 +131,7 @@ class _Bridge(QObject):
     """
     peer_connected    = pyqtSignal(object)   # Peer
     peer_disconnected = pyqtSignal(str)      # peer_id
+    peer_name_changed = pyqtSignal(str, str) # (peer_id, new_name)
     message_received  = pyqtSignal(object)   # Message
     message_deleted   = pyqtSignal(str, str) # (channel, message_id)
     network_error     = pyqtSignal(str)      # error message string
@@ -187,10 +199,12 @@ class MainWindow(QMainWindow):
         # Wire network callbacks -> bridge signals
         network.on_peer_connected    = self._bridge.peer_connected.emit
         network.on_peer_disconnected = self._bridge.peer_disconnected.emit
+        network.on_peer_name_changed = self._bridge.peer_name_changed.emit
         network.on_error             = self._bridge.network_error.emit
 
-        # Connect error signal
+        # Connect error and name change signals
         self._bridge.network_error.connect(self._on_network_error)
+        self._bridge.peer_name_changed.connect(self._on_peer_name_changed)
 
         # Single render path: store_message -> broker listener -> bridge.emit -> _on_message
         message_broker.on_message(self._bridge.message_received.emit)
@@ -338,8 +352,8 @@ class MainWindow(QMainWindow):
         self._unread_section_lbl = QLabel("UNREAD MESSAGES")
         self._unread_section_lbl.setObjectName("section_label")
         self._unread_section_lbl.setStyleSheet(
-            "background-color: #2f3136; color: #faa61a; font-size: 11px; "
-            "font-weight: bold; padding: 12px 8px 4px 16px; letter-spacing: 0.8px;"
+            "background-color: #2b2d31; color: #faa81a; font-size: 11px; "
+            "font-weight: bold; padding: 12px 8px 4px 16px; letter-spacing: 1px;"
         )
         self._unread_section_lbl.setVisible(False)
         vbox.addWidget(self._unread_section_lbl)
@@ -349,10 +363,10 @@ class MainWindow(QMainWindow):
         self._unread_list.setMaximumHeight(120)
         self._unread_list.setVisible(False)
         self._unread_list.setStyleSheet(
-            "QListWidget { background-color: #2f3136; border: none; }"
-            "QListWidget::item { color: #ffffff; padding: 4px 8px 4px 12px; "
-            "border-radius: 4px; margin: 1px 4px; background-color: #32353b; }"
-            "QListWidget::item:hover { background-color: #393c43; }"
+            "QListWidget { background-color: #2b2d31; border: none; }"
+            "QListWidget::item { color: #ffffff; padding: 5px 8px 5px 12px; "
+            "border-radius: 6px; margin: 1px 8px; background-color: #35373c; }"
+            "QListWidget::item:hover { background-color: #404249; }"
         )
         self._unread_list.itemClicked.connect(self._on_unread_item_clicked)
         vbox.addWidget(self._unread_list)
@@ -391,7 +405,7 @@ class MainWindow(QMainWindow):
 
         self._no_dm_hint = QLabel("  Click a peer to start DM")
         self._no_dm_hint.setStyleSheet(
-            "color: #4f545c; font-size: 11px; padding: 4px 4px;"
+            "color: #5c5e66; font-size: 11px; padding: 4px 8px;"
         )
         vbox.addWidget(self._no_dm_hint)
 
@@ -412,7 +426,7 @@ class MainWindow(QMainWindow):
             "  are on the same network."
         )
         self._no_peers_hint.setStyleSheet(
-            "color: #4f545c; font-size: 11px; padding: 6px 4px;"
+            "color: #5c5e66; font-size: 11px; padding: 6px 8px;"
         )
         self._no_peers_hint.setWordWrap(True)
         vbox.addWidget(self._no_peers_hint)
@@ -423,9 +437,9 @@ class MainWindow(QMainWindow):
         add_peer_btn.setFixedHeight(32)
         add_peer_btn.setToolTip("Connect to a peer by IP address (for cross-subnet)")
         add_peer_btn.setStyleSheet(
-            "QPushButton { background: #40444b; color: #8e9297; font-size: 12px; "
-            "             margin: 4px 8px; border-radius: 4px; }"
-            "QPushButton:hover { background: #4f545c; color: #dcddde; }"
+            "QPushButton { background: #35373c; color: #949ba4; font-size: 12px; "
+            "             margin: 4px 8px; border-radius: 6px; }"
+            "QPushButton:hover { background: #404249; color: #f2f3f5; }"
         )
         add_peer_btn.clicked.connect(self._add_peer_dialog)
         vbox.addWidget(add_peer_btn)
@@ -433,25 +447,62 @@ class MainWindow(QMainWindow):
         # --- Current-user bar ---
         user_bar = QWidget()
         user_bar.setObjectName("user_bar")
-        user_bar.setFixedHeight(52)
+        user_bar.setFixedHeight(60)
         hb = QHBoxLayout(user_bar)
         hb.setContentsMargins(10, 0, 10, 0)
+        hb.setSpacing(8)
 
-        name_lbl = QLabel(f"🟢  {_escape(self._cfg.username)}")
-        name_lbl.setObjectName("own_username")
-        hb.addWidget(name_lbl)
-        hb.addStretch()
-
-        # Settings button
-        settings_btn = QPushButton("⚙")
-        settings_btn.setFixedSize(28, 28)
-        settings_btn.setToolTip("Settings")
-        settings_btn.setStyleSheet(
-            "QPushButton { background: transparent; color: #8e9297; font-size: 16px; border: none; }"
-            "QPushButton:hover { color: #dcddde; }"
+        # Avatar circle for own user
+        own_initial = self._cfg.username[0].upper() if self._cfg.username else "?"
+        colors = ["#5865f2", "#57f287", "#fee75c", "#eb459e", "#ed4245",
+                  "#3ba55c", "#faa81a", "#e67e22", "#9b59b6", "#1abc9c"]
+        cidx = sum(ord(c) for c in self._cfg.username) % len(colors)
+        self._own_avatar = QLabel(own_initial)
+        self._own_avatar.setFixedSize(36, 36)
+        self._own_avatar.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._own_avatar.setStyleSheet(
+            f"background-color: {colors[cidx]}; color: #ffffff; "
+            f"font-weight: bold; font-size: 15px; border-radius: 18px;"
         )
-        settings_btn.clicked.connect(self._open_settings)
-        hb.addWidget(settings_btn)
+        hb.addWidget(self._own_avatar)
+
+        # Name + "click to edit" stacked
+        name_col = QWidget()
+        name_col.setStyleSheet("background: transparent;")
+        ncol = QVBoxLayout(name_col)
+        ncol.setContentsMargins(0, 0, 0, 0)
+        ncol.setSpacing(0)
+
+        self._own_name_lbl = QPushButton(_escape(self._cfg.username))
+        self._own_name_lbl.setObjectName("own_username")
+        self._own_name_lbl.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._own_name_lbl.setToolTip("Click to change username")
+        self._own_name_lbl.setStyleSheet(
+            "QPushButton { color: #f2f3f5; font-weight: bold; font-size: 13px; "
+            "background: transparent; border: none; text-align: left; padding: 0; }"
+            "QPushButton:hover { color: #5865f2; }"
+        )
+        self._own_name_lbl.clicked.connect(self._change_username)
+        ncol.addWidget(self._own_name_lbl)
+
+        status_lbl = QLabel("Online")
+        status_lbl.setStyleSheet(
+            "color: #23a559; font-size: 11px; background: transparent;"
+        )
+        ncol.addWidget(status_lbl)
+        hb.addWidget(name_col, stretch=1)
+
+        # Edit profile button — clearly visible
+        edit_btn = QPushButton("✏")
+        edit_btn.setFixedSize(32, 32)
+        edit_btn.setToolTip("Change username / Settings")
+        edit_btn.setStyleSheet(
+            "QPushButton { background: #35373c; color: #949ba4; "
+            "font-size: 14px; border: none; border-radius: 16px; }"
+            "QPushButton:hover { background: #404249; color: #f2f3f5; }"
+        )
+        edit_btn.clicked.connect(self._open_settings)
+        hb.addWidget(edit_btn)
 
         vbox.addWidget(user_bar)
         return sidebar
@@ -475,8 +526,8 @@ class MainWindow(QMainWindow):
 
         self._ch_header = QLabel(f"# {self._channel}")
         self._ch_header.setStyleSheet(
-            "background: transparent; color: #ffffff; "
-            "font-size: 15px; font-weight: bold;"
+            "background: transparent; color: #f2f3f5; "
+            "font-size: 16px; font-weight: bold;"
         )
         hdr_hbox.addWidget(self._ch_header)
         hdr_hbox.addStretch()
@@ -485,9 +536,9 @@ class MainWindow(QMainWindow):
         delete_btn.setFixedSize(32, 32)
         delete_btn.setToolTip("Delete chat history")
         delete_btn.setStyleSheet(
-            "QPushButton { background: transparent; color: #8e9297; "
+            "QPushButton { background: transparent; color: #949ba4; "
             "font-size: 16px; border: none; }"
-            "QPushButton:hover { color: #ed4245; }"
+            "QPushButton:hover { color: #da373c; }"
         )
         delete_btn.clicked.connect(self._delete_current_chat)
         hdr_hbox.addWidget(delete_btn)
@@ -517,9 +568,9 @@ class MainWindow(QMainWindow):
         attach_btn.setFixedSize(42, 42)
         attach_btn.setToolTip("Attach a file")
         attach_btn.setStyleSheet(
-            "QPushButton#attach_btn { background: #40444b; color: #dcddde; "
-            "font-size: 18px; border-radius: 8px; border: none; }"
-            "QPushButton#attach_btn:hover { background: #4f545c; }"
+            "QPushButton#attach_btn { background: #383a40; color: #f2f3f5; "
+            "font-size: 18px; border-radius: 10px; border: none; }"
+            "QPushButton#attach_btn:hover { background: #404249; }"
         )
         attach_btn.clicked.connect(self._attach_file)
         hb.addWidget(attach_btn)
@@ -587,7 +638,7 @@ class MainWindow(QMainWindow):
 
         self._append_system(
             f"<b>{_escape(peer.username)}</b> connected "
-            f"<span style='color:#72767d;'>({_escape(peer.ip)})</span>"
+            f"<span style='color:#949ba4;'>({_escape(peer.ip)})</span>"
         )
 
     @pyqtSlot(str)
@@ -606,6 +657,40 @@ class MainWindow(QMainWindow):
         # Grey out their DM entry
         self._update_dm_status(peer_id, online=False)
 
+    @pyqtSlot(str, str)
+    def _on_peer_name_changed(self, peer_id: str, new_name: str):
+        """Handle a peer changing their display name."""
+        old_name = None
+        # Update online user list
+        for i in range(self._user_list.count()):
+            item = self._user_list.item(i)
+            if item.data(Qt.ItemDataRole.UserRole) == peer_id:
+                old_name = item.data(Qt.ItemDataRole.DisplayRole) or "Unknown"
+                item.setData(Qt.ItemDataRole.DisplayRole, new_name)
+                # Rebuild the peer row widget
+                peer = self._peers.get(peer_id)
+                ip = peer.ip if peer else ""
+                row_widget = _PeerRow(new_name, ip)
+                self._user_list.setItemWidget(item, row_widget)
+                break
+
+        # Update DM sidebar entries
+        from src.core.messaging import dm_channel_id
+        dm_ch = dm_channel_id(self._cfg.peer_id, peer_id)
+        if dm_ch in self._active_dms:
+            self._active_dms[dm_ch]["username"] = new_name
+            self._update_dm_status(peer_id, online=True)
+            # Update header if currently viewing this DM
+            if self._channel == dm_ch:
+                self._ch_header.setText(f"@ {new_name}")
+                self._input.setPlaceholderText(f"Message @{new_name}")
+
+        if old_name and old_name != new_name:
+            self._append_system(
+                f"<b>{_escape(old_name)}</b> changed their name to "
+                f"<b>{_escape(new_name)}</b>"
+            )
+
     @pyqtSlot(str)
     def _on_network_error(self, error_msg: str):
         """Show a network error (port taken, firewall, etc.) in the chat."""
@@ -617,7 +702,7 @@ class MainWindow(QMainWindow):
             "  in your firewall."
         )
         self._no_peers_hint.setStyleSheet(
-            "color: #ed4245; font-size: 11px; padding: 6px 4px;"
+            "color: #da373c; font-size: 11px; padding: 6px 8px;"
         )
 
     @pyqtSlot(object)
@@ -751,7 +836,18 @@ class MainWindow(QMainWindow):
                 if p != self._cfg.peer_id:
                     other_id = p
                     peer_obj = self._peers.get(p)
-                    other_name = peer_obj.username if peer_obj else p[:8]
+                    if peer_obj:
+                        other_name = peer_obj.username
+                    elif self._broker._storage:
+                        # Search stored messages for this peer's name
+                        for msg in self._broker._storage._messages:
+                            if msg.get("sender_id") == p and msg.get("sender_name"):
+                                other_name = msg["sender_name"]
+                                break
+                        else:
+                            other_name = f"User ({p[:8]})"
+                    else:
+                        other_name = f"User ({p[:8]})"
                     break
 
         self._active_dms[dm_ch] = {"peer_id": other_id, "username": other_name}
@@ -759,20 +855,20 @@ class MainWindow(QMainWindow):
         # Check if peer is currently online
         is_online = self._peers.get(other_id) is not None
         dot = "●" if is_online else "○"
-        dot_color = "#3ba55c" if is_online else "#72767d"
+        dot_color = "#23a559" if is_online else "#949ba4"
 
         item = QListWidgetItem(f"  {dot}  {other_name}")
         item.setData(Qt.ItemDataRole.UserRole, dm_ch)
         # Store peer_id in a secondary role for status updates
         item.setData(Qt.ItemDataRole.ToolTipRole, other_id)
-        item.setForeground(QColor("#dcddde") if is_online else QColor("#72767d"))
+        item.setForeground(QColor("#f2f3f5") if is_online else QColor("#949ba4"))
         self._dm_list.addItem(item)
         self._no_dm_hint.setVisible(False)
 
     def _update_dm_status(self, peer_id: str, online: bool):
         """Update the green/grey dot and text colour on a DM entry."""
         dot = "●" if online else "○"
-        color = QColor("#dcddde") if online else QColor("#72767d")
+        color = QColor("#f2f3f5") if online else QColor("#949ba4")
         for i in range(self._dm_list.count()):
             item = self._dm_list.item(i)
             if item.data(Qt.ItemDataRole.ToolTipRole) == peer_id:
@@ -798,7 +894,7 @@ class MainWindow(QMainWindow):
                     item.setText(f"  {dot}  {name}  ({count})")
                     item.setForeground(QColor("#ffffff"))
                 else:
-                    color = QColor("#dcddde") if is_online else QColor("#72767d")
+                    color = QColor("#f2f3f5") if is_online else QColor("#949ba4")
                     item.setText(f"  {dot}  {name}")
                     item.setForeground(color)
                 break
@@ -814,7 +910,7 @@ class MainWindow(QMainWindow):
                     item.setForeground(QColor("#ffffff"))
                 else:
                     item.setText(f"  # {channel}")
-                    item.setForeground(QColor("#8e9297"))
+                    item.setForeground(QColor("#949ba4"))
                 break
 
     def _refresh_unread_section(self):
@@ -905,14 +1001,20 @@ class MainWindow(QMainWindow):
             if peer_obj:
                 username = peer_obj.username
             elif self._broker._storage:
-                # Search messages for any sent BY the other peer
-                rows = self._broker._storage.get_history(dm_ch, limit=50)
-                for row in rows:
-                    if row["sender_id"] == other_id:
+                # Search ALL messages in this DM for the peer's name
+                rows = self._broker._storage.get_history(dm_ch, limit=200)
+                for row in reversed(rows):  # newest first
+                    if row["sender_id"] == other_id and row.get("sender_name"):
                         username = row["sender_name"]
                         break
+                # Also search all channels for any message from this peer
+                if not username:
+                    for msg in self._broker._storage._messages:
+                        if msg.get("sender_id") == other_id and msg.get("sender_name"):
+                            username = msg["sender_name"]
+                            break
             if not username:
-                username = other_id[:8]
+                username = f"User ({other_id[:8]})"
 
             self._ensure_dm_entry(dm_ch, other_id, username)
 
@@ -1079,7 +1181,16 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "Empty File", "Cannot send an empty file.")
             return
 
-        # Read and base64-encode
+        # Show progress for large files (> 5MB)
+        large = file_size > 5 * 1024 * 1024
+        if large:
+            self._append_system(
+                f"Sending <b>{_escape(path.name)}</b> "
+                f"({_human_size(file_size)})… please wait."
+            )
+            QApplication.processEvents()
+
+        # Read and base64-encode in a separate step to avoid blocking
         file_data = path.read_bytes()
         b64_data = base64.b64encode(file_data).decode("ascii")
 
@@ -1105,6 +1216,9 @@ class MainWindow(QMainWindow):
                 self._net.send_to(target_id, msg)
         else:
             self._net.broadcast(msg)
+
+        if large:
+            self._append_system(f"File <b>{_escape(path.name)}</b> sent successfully.")
 
     def _add_peer_dialog(self):
         """Show a dialog for manually connecting to a peer by IP address."""
@@ -1201,25 +1315,62 @@ class MainWindow(QMainWindow):
             self._append_system("All chat history deleted.")
 
     def _open_settings(self):
-        """Show a settings menu with username change and history deletion."""
+        """Show a settings menu anchored to the sender button."""
+        # Build the menu
         menu = QMenu(self)
-        rename_action = menu.addAction("Change Username")
+        menu.setStyleSheet(
+            "QMenu { background-color: #111214; color: #f2f3f5; "
+            "border: 1px solid #1e1f22; border-radius: 6px; padding: 6px; }"
+            "QMenu::item { padding: 8px 20px; border-radius: 4px; font-size: 13px; }"
+            "QMenu::item:selected { background-color: #5865f2; color: #ffffff; }"
+            "QMenu::separator { height: 1px; background: #2b2d31; margin: 4px 8px; }"
+        )
+        rename_action = menu.addAction("✏  Change Username")
         menu.addSeparator()
-        delete_all_action = menu.addAction("Delete All Chat History")
-        action = menu.exec(QCursor.pos())
+        delete_all_action = menu.addAction("🗑  Delete All Chat History")
+
+        # Show menu above the edit button (bottom-left of sidebar)
+        sender = self.sender()
+        if sender and hasattr(sender, 'mapToGlobal'):
+            pos = sender.mapToGlobal(sender.rect().topLeft())
+            # Show above the button
+            pos.setY(pos.y() - menu.sizeHint().height())
+            action = menu.exec(pos)
+        else:
+            action = menu.exec(QCursor.pos())
+
         if action == rename_action:
-            new_name, ok = QInputDialog.getText(
-                self, "Settings", "Change your username:",
-                text=self._cfg.username,
-            )
-            if ok and new_name.strip():
-                self._cfg.username = new_name.strip()
-                self._net.send_presence("online")
-                self._append_system(
-                    f"Username changed to <b>{_escape(new_name.strip())}</b>."
-                )
+            self._change_username()
         elif action == delete_all_action:
             self._delete_all_history()
+
+    def _change_username(self):
+        """Show a dialog to change the user's display name."""
+        new_name, ok = QInputDialog.getText(
+            self, "Change Username", "Enter your new display name:",
+            text=self._cfg.username,
+        )
+        if ok and new_name.strip():
+            new_name = new_name.strip()
+            old_name = self._cfg.username
+            self._cfg.username = new_name
+            # Update the user bar label and avatar
+            self._own_name_lbl.setText(_escape(new_name))
+            new_initial = new_name[0].upper() if new_name else "?"
+            colors = ["#5865f2", "#57f287", "#fee75c", "#eb459e", "#ed4245",
+                      "#3ba55c", "#faa81a", "#e67e22", "#9b59b6", "#1abc9c"]
+            cidx = sum(ord(c) for c in new_name) % len(colors)
+            self._own_avatar.setText(new_initial)
+            self._own_avatar.setStyleSheet(
+                f"background-color: {colors[cidx]}; color: #ffffff; "
+                f"font-weight: bold; font-size: 15px; border-radius: 18px;"
+            )
+            # Broadcast name change to all connected peers
+            self._net.broadcast_name_change(new_name)
+            self._append_system(
+                f"Username changed from <b>{_escape(old_name)}</b> "
+                f"to <b>{_escape(new_name)}</b>."
+            )
 
     def _on_link_clicked(self, url: QUrl):
         """Handle clicks on file links in chat — open with system default."""
@@ -1249,7 +1400,8 @@ class MainWindow(QMainWindow):
 
         menu = QMenu(self)
         menu.setStyleSheet(
-            "QMenu { background: #2f3136; color: #dcddde; border: 1px solid #202225; }"
+            "QMenu { background: #111214; color: #f2f3f5; border: 1px solid #1e1f22; border-radius: 6px; padding: 4px; }"
+            "QMenu::item { padding: 6px 24px 6px 12px; border-radius: 4px; }"
             "QMenu::item:selected { background: #5865f2; }"
         )
         delete_for_me = menu.addAction("Delete for me")
@@ -1300,7 +1452,7 @@ class MainWindow(QMainWindow):
 
     def _append_msg(self, sender: str, content: str, ts: str, is_self: bool = False,
                     msg_id: str = "", sender_id: str = ""):
-        """Append a WhatsApp-style chat bubble (right-aligned for self, left for others)."""
+        """Append a chat bubble (right-aligned for self, left for others)."""
         time = _fmt_time(ts)
         anchor_open = (
             f'<a href="msgid://{msg_id}/{sender_id}" '
@@ -1310,32 +1462,32 @@ class MainWindow(QMainWindow):
 
         if is_self:
             html_block = (
-                f'<table width="100%" cellspacing="0" cellpadding="0" border="0">'
-                f'<tr><td width="25%"></td>'
-                f'<td bgcolor="#1a3a2a" style="padding: 6px 12px;">'
+                f'<table width="100%" cellspacing="0" cellpadding="4" border="0">'
+                f'<tr><td width="20%"></td>'
+                f'<td bgcolor="#1b4332" style="padding: 8px 14px; border-radius: 12px;">'
                 f'{anchor_open}'
-                f'<span style="color:#8bbbaa; font-weight:bold; font-size:12px;">'
+                f'<span style="color:#95d5b2; font-weight:bold; font-size:12px;">'
                 f'{_escape(sender)}</span>'
-                f' <span style="color:#5d7a6e; font-size:10px;">{time}</span><br/>'
-                f'<span style="color:#dcddde; font-size:14px;">'
+                f' <span style="color:#52796f; font-size:10px;">{time}</span><br/>'
+                f'<span style="color:#f2f3f5; font-size:14px;">'
                 f'{_escape(content)}</span>'
                 f'{anchor_close}'
                 f'</td></tr></table>'
             )
         else:
             html_block = (
-                f'<table width="100%" cellspacing="0" cellpadding="0" border="0">'
+                f'<table width="100%" cellspacing="0" cellpadding="4" border="0">'
                 f'<tr>'
-                f'<td bgcolor="#2f3136" style="padding: 6px 12px;">'
+                f'<td bgcolor="#2b2d31" style="padding: 8px 14px; border-radius: 12px;">'
                 f'{anchor_open}'
-                f'<span style="color:#00b0f4; font-weight:bold; font-size:12px;">'
+                f'<span style="color:#5865f2; font-weight:bold; font-size:12px;">'
                 f'{_escape(sender)}</span>'
-                f' <span style="color:#72767d; font-size:10px;">{time}</span><br/>'
-                f'<span style="color:#dcddde; font-size:14px;">'
+                f' <span style="color:#949ba4; font-size:10px;">{time}</span><br/>'
+                f'<span style="color:#f2f3f5; font-size:14px;">'
                 f'{_escape(content)}</span>'
                 f'{anchor_close}'
                 f'</td>'
-                f'<td width="25%"></td>'
+                f'<td width="20%"></td>'
                 f'</tr></table>'
             )
         self._chat.append(html_block)
@@ -1346,24 +1498,24 @@ class MainWindow(QMainWindow):
         time = _fmt_time(ts)
         if is_self:
             html_block = (
-                f'<table width="100%" cellspacing="0" cellpadding="0" border="0">'
-                f'<tr><td width="25%"></td>'
-                f'<td bgcolor="#1a3a2a" style="padding: 6px 12px; opacity: 0.5;">'
-                f'<span style="color:#8e9297; font-style:italic; font-size:13px;">'
+                f'<table width="100%" cellspacing="0" cellpadding="4" border="0">'
+                f'<tr><td width="20%"></td>'
+                f'<td bgcolor="#1b4332" style="padding: 6px 14px; opacity: 0.4;">'
+                f'<span style="color:#949ba4; font-style:italic; font-size:13px;">'
                 f'You deleted this message</span>'
-                f' <span style="color:#5d7a6e; font-size:10px;">{time}</span>'
+                f' <span style="color:#52796f; font-size:10px;">{time}</span>'
                 f'</td></tr></table>'
             )
         else:
             html_block = (
-                f'<table width="100%" cellspacing="0" cellpadding="0" border="0">'
+                f'<table width="100%" cellspacing="0" cellpadding="4" border="0">'
                 f'<tr>'
-                f'<td bgcolor="#2f3136" style="padding: 6px 12px; opacity: 0.5;">'
-                f'<span style="color:#8e9297; font-style:italic; font-size:13px;">'
+                f'<td bgcolor="#2b2d31" style="padding: 6px 14px; opacity: 0.4;">'
+                f'<span style="color:#949ba4; font-style:italic; font-size:13px;">'
                 f'This message was deleted</span>'
-                f' <span style="color:#72767d; font-size:10px;">{time}</span>'
+                f' <span style="color:#949ba4; font-size:10px;">{time}</span>'
                 f'</td>'
-                f'<td width="25%"></td>'
+                f'<td width="20%"></td>'
                 f'</tr></table>'
             )
         self._chat.append(html_block)
@@ -1397,9 +1549,9 @@ class MainWindow(QMainWindow):
         else:
             file_link = f'📄 {fname}'
 
-        name_color = "#8bbbaa" if is_self else "#00b0f4"
-        time_color = "#5d7a6e" if is_self else "#72767d"
-        bg_color = "#1a3a2a" if is_self else "#2f3136"
+        name_color = "#95d5b2" if is_self else "#5865f2"
+        time_color = "#52796f" if is_self else "#949ba4"
+        bg_color = "#1b4332" if is_self else "#2b2d31"
 
         # Wrap header (sender + time) in msgid anchor for right-click delete
         header_anchor_open = (
@@ -1421,17 +1573,17 @@ class MainWindow(QMainWindow):
 
         if is_self:
             html_block = (
-                f'<table width="100%" cellspacing="0" cellpadding="0" border="0">'
-                f'<tr><td width="25%"></td>'
-                f'<td bgcolor="{bg_color}" style="padding: 6px 12px;">'
+                f'<table width="100%" cellspacing="0" cellpadding="4" border="0">'
+                f'<tr><td width="20%"></td>'
+                f'<td bgcolor="{bg_color}" style="padding: 8px 14px;">'
                 f'{inner}</td></tr></table>'
             )
         else:
             html_block = (
-                f'<table width="100%" cellspacing="0" cellpadding="0" border="0">'
-                f'<tr><td bgcolor="{bg_color}" style="padding: 6px 12px;">'
+                f'<table width="100%" cellspacing="0" cellpadding="4" border="0">'
+                f'<tr><td bgcolor="{bg_color}" style="padding: 8px 14px;">'
                 f'{inner}</td>'
-                f'<td width="25%"></td></tr></table>'
+                f'<td width="20%"></td></tr></table>'
             )
 
         self._chat.append(html_block)
@@ -1440,8 +1592,8 @@ class MainWindow(QMainWindow):
     def _append_system(self, html_content: str):
         """Append a dimmed, centred system notification."""
         html_block = (
-            f'<div style="text-align:center; margin:6px 0; color:#72767d; font-size:12px;">'
-            f'  ─── {html_content} ───'
+            f'<div style="text-align:center; margin:8px 0; color:#949ba4; font-size:12px;">'
+            f'  ── {html_content} ──'
             f'</div>'
         )
         self._chat.append(html_block)

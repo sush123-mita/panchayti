@@ -192,6 +192,7 @@ class NetworkManager:
         # mechanism even though they are called here from worker threads.
         self.on_peer_connected:    Optional[Callable] = None
         self.on_peer_disconnected: Optional[Callable] = None
+        self.on_peer_name_changed: Optional[Callable] = None
         self.on_error:             Optional[Callable] = None
         # NOTE: on_message_received is removed.  Incoming messages are
         # notified through MessageBroker.store_message → broker listeners,
@@ -260,6 +261,17 @@ class NetworkManager:
             "type":    "presence",
             "peer_id": self._cfg.peer_id,
             "status":  status,
+        }
+        with self._h_lock:
+            for h in self._handlers.values():
+                h.enqueue(payload)
+
+    def broadcast_name_change(self, new_name: str):
+        """Broadcast a username change to all connected peers."""
+        payload = {
+            "type":     "name_change",
+            "peer_id":  self._cfg.peer_id,
+            "username": new_name,
         }
         with self._h_lock:
             for h in self._handlers.values():
@@ -410,6 +422,13 @@ class NetworkManager:
             message = self._broker.process_incoming(peer_id, data)
             if message:
                 self._broker.store_message(message)
+
+        elif msg_type == "name_change":
+            new_name = data.get("username", "")
+            if new_name:
+                self._peers.update_fields(peer_id, username=new_name)
+                if self.on_peer_name_changed:
+                    self.on_peer_name_changed(peer_id, new_name)
 
         elif msg_type == "delete":
             message = self._broker.process_incoming(peer_id, data)

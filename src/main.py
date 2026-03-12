@@ -34,18 +34,18 @@ def main():
 
     # --- First-run: ask for a username ---
     default_name = config.username
-    if not default_name or default_name in ("User",):
+    if not default_name or default_name in ("User",
+            os.environ.get("USERNAME", ""),
+            os.environ.get("USER", "")):
         name, ok = QInputDialog.getText(
             None,
             "Welcome to LocalDiscord",
-            "Choose a username to appear on the network:",
+            "Choose a display name for the network:\n"
+            "(You can change it later from the settings)",
             text=default_name or "User",
         )
         if ok and name.strip():
             config.username = name.strip()
-    else:
-        # Offer to change username at startup (can be skipped)
-        pass
 
     # --- Instantiate and wire up components ---
     from src.core.storage import StorageManager
